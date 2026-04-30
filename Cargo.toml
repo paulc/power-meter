@@ -1,0 +1,85 @@
+
+[package]
+edition      = "2024"
+name         = "esp-hal-utils"
+rust-version = "1.88"
+version      = "0.1.0"
+
+[features]
+# Need to set chip otherwise rust-analyzer gets confused
+# (override using cargo build/run --no-default-features --features ...)
+default = ["esp32c6"]
+
+esp32s3 = [
+    "esp-hal/esp32s3",
+    "esp-bootloader-esp-idf/esp32s3",
+    "esp-alloc/esp32s3",
+    "esp-backtrace/esp32s3",
+    "esp-rtos/esp32s3",
+    "esp-radio/esp32s3",
+]
+esp32c3 = [
+    "esp-hal/esp32c3",
+    "esp-bootloader-esp-idf/esp32c3",
+    "esp-alloc/esp32c3",
+    "esp-backtrace/esp32c3",
+    "esp-rtos/esp32c3",
+    "esp-radio/esp32c3",
+]
+esp32c6 = [
+    "esp-hal/esp32c6",
+    "esp-bootloader-esp-idf/esp32c6",
+    "esp-alloc/esp32c6",
+    "esp-backtrace/esp32c6",
+    "esp-rtos/esp32c6",
+    "esp-radio/esp32c6",
+]
+
+[dependencies]
+esp-hal = { version="1.1.0", features = ["unstable", "defmt"] }
+esp-bootloader-esp-idf = {  version="0.5.0", features = [] }
+esp-alloc = { version="0.10.0", features = ["defmt"] }
+esp-backtrace = { version="0.19.0", features = ["defmt", "panic-handler"] }
+esp-rtos = { version="0.3.0", features = ["esp-radio", "defmt", "embassy"] }
+esp-radio = { version="0.18.0", features = ["ble", "defmt", "unstable", "esp-alloc"] }
+
+embassy-executor = { version = "0.10.0", features = ["defmt"] }
+embassy-time = { version = "0.5.0", features = ["defmt"] }
+embassy-futures = { version = "0.1.2", features = ["defmt"] }
+embassy-sync = { version = "0.7.0", features = ["defmt"] }
+embassy-embedded-hal = { version = "0.6.0", features = ["defmt"] }
+
+embedded-hal-async = { version = "1.0.0", features = ["defmt-03"] }
+embedded-io-async = { version = "0.7.0" }
+
+anyhow = { version = "1.0.100", default-features = false }
+critical-section = "1.2.0"
+defmt = "1.0.1"
+defmt-rtt = "1.0.0"
+heapless = { version = "0.9.1", features = ["defmt", "serde"] }
+portable-atomic = "1.13.0"
+static_cell = { version = "2.1.1", features = ["nightly"] }
+
+trouble-host = { version = "0.6.0", features = [
+    "default-packet-pool-mtu-255",
+    "derive",
+    "scan",
+] }
+
+[profile.dev]
+# Rust debug is too slow.
+# For debug builds always builds with some optimization
+opt-level = 's'
+
+[profile.release]
+codegen-units    = 1     # LLVM can perform better optimizations using a single thread
+debug            = 2
+debug-assertions = false
+incremental      = false
+#lto              = 'fat'
+lto              = 'off'
+opt-level        = 's'
+overflow-checks  = false
+
+[profile.dev.package.esp-radio]
+opt-level = 3
