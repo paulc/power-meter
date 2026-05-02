@@ -34,7 +34,6 @@ use static_cell::StaticCell;
 mod ble_task;
 mod c6_lcd;
 mod encoder;
-mod format_mac;
 mod ina219;
 
 use c6_lcd::{init_lcd, LcdMessage, LcdSender};
