@@ -51,19 +51,24 @@ pub async fn ble_task(spawner: Spawner, bluetooth: esp_hal::peripherals::BT<'sta
     let address: Address = Address::random(address);
 
     static RESOURCES: StaticCell<
-        HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX, ADV_SETS_MAX>,
+        HostResources<
+            ExternalController<BleConnector, 1>,
+            DefaultPacketPool,
+            CONNECTIONS_MAX,
+            L2CAP_CHANNELS_MAX,
+            ADV_SETS_MAX,
+        >,
     > = StaticCell::new();
     let resources = RESOURCES.init(HostResources::new());
 
     static STACK: StaticCell<Stack<ExternalController<BleConnector, 1>, DefaultPacketPool>> =
         StaticCell::new();
-    let stack = STACK.init(trouble_host::new(controller, resources).set_random_address(address));
-
-    let Host {
-        mut peripheral,
-        runner,
-        ..
-    } = stack.build();
+    let host = trouble_host::new(controller, resources)
+        .set_random_address(address)
+        .build();
+    let stack = STACK.init(host);
+    let runner = stack.runner();
+    let mut peripheral = stack.peripheral();
 
     info!("Starting Advertising and GATT service");
     let server = CounterServer::new_with_config(GapConfig::Peripheral(PeripheralConfig {
@@ -169,7 +174,7 @@ async fn advertise<'values, 'server, C: Controller>(
     let len = AdStructure::encode_slice(
         &[
             AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-            AdStructure::ServiceUuids16(&[[0x01, 0x18]]),
+            AdStructure::CompleteServiceUuids16(&[[0x01, 0x18]]),
             AdStructure::CompleteLocalName(name.as_bytes()),
         ],
         &mut advertiser_data[..],
