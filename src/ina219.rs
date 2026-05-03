@@ -134,6 +134,36 @@ pub struct Ina219Reading {
     pub shunt_ma: f32,
 }
 
+impl Default for Ina219Reading {
+    fn default() -> Self {
+        Self {
+            bus_v: 0.0,
+            shunt_ma: 0.0,
+        }
+    }
+}
+impl Ina219Reading {
+    pub fn power_mw(&self) -> f32 {
+        self.bus_v * self.shunt_ma
+    }
+    pub fn to_bytes(&self) -> [u8; 8] {
+        let mut bytes = [0_u8; 8];
+        let (bytes_a, bytes_b) = bytes.split_at_mut(4);
+        bytes_a.copy_from_slice(&self.bus_v.to_le_bytes());
+        bytes_b.copy_from_slice(&self.shunt_ma.to_le_bytes());
+        bytes
+    }
+    pub fn from_bytes(bytes: [u8; 8]) -> Self {
+        let mut bytes_a = [0_u8; 4];
+        let mut bytes_b = [0_u8; 4];
+        bytes_a.copy_from_slice(&bytes[0..4]);
+        bytes_b.copy_from_slice(&bytes[4..8]);
+        let bus_v = f32::from_le_bytes(bytes_a);
+        let shunt_ma = f32::from_le_bytes(bytes_b);
+        Self { bus_v, shunt_ma }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Ina219Config(pub u16);
 

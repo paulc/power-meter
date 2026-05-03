@@ -16,11 +16,7 @@ use defmt_rtt as _;
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, Either};
-use embassy_sync::{
-    blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex},
-    mutex::Mutex,
-    signal::Signal,
-};
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Ticker, Timer};
 use embedded_graphics::{
     pixelcolor::Rgb565,
@@ -28,7 +24,7 @@ use embedded_graphics::{
 };
 use esp_alloc as _;
 use esp_backtrace as _;
-use portable_atomic::{AtomicI32, Ordering};
+use portable_atomic::{AtomicI32, AtomicU16, AtomicU64, Ordering};
 use static_cell::StaticCell;
 
 mod ble_task;
@@ -38,6 +34,7 @@ mod ina219;
 
 use c6_lcd::{init_lcd, LcdMessage, LcdSender};
 use encoder::EncoderMsg;
+use ina219::*;
 
 extern crate alloc;
 
@@ -47,13 +44,29 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 static I2C_BUS: StaticCell<Mutex<NoopRawMutex, i2c::master::I2c<Async>>> = StaticCell::new();
 static ENCODER: AtomicI32 = AtomicI32::new(0);
-static VI_SIGNAL: Signal<CriticalSectionRawMutex, (f32, f32)> = Signal::new();
+static POWER_INSTANT: AtomicU64 = AtomicU64::new(0);
+static POWER_AVG: AtomicU64 = AtomicU64::new(0);
+static INA219_CONFIG: AtomicU16 = AtomicU16::new(0);
+
+#[embassy_executor::task]
+async fn memory_task() {
+    loop {
+        // If using esp-alloc with the global allocator:
+        let (used, free) = {
+            let used = esp_alloc::HEAP.used();
+            let free = esp_alloc::HEAP.free();
+            (used, free)
+        };
+        defmt::info!("Heap: used={} free={} total={}", used, free, used + free);
+        Timer::after(Duration::from_secs(5)).await;
+    }
+}
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
-    esp_alloc::heap_allocator!(size: 72 * 1024);
+    esp_alloc::heap_allocator!(size: 64 * 1024);
 
     defmt::info!("Init!");
 
@@ -65,6 +78,8 @@ async fn main(spawner: Spawner) {
         #[cfg(target_arch = "riscv32")]
         sw_int.software_interrupt0,
     );
+
+    spawner.spawn(memory_task().expect("memory_task"));
 
     // Init LCD (pass peripherals)
     let mut lcd_tx = init_lcd(
@@ -103,24 +118,27 @@ async fn main(spawner: Spawner) {
     // Create shared I2C bus
     let i2c_bus = I2C_BUS.init(Mutex::new(i2c));
 
-    let mut ina219_device = ina219::Ina219::new(
+    let mut ina219_device = Ina219::new(
         I2cDevice::new(i2c_bus),
-        ina219::INA219_ADDRESS,
-        ina219::INA219_SHUNT_RESISTOR,
+        INA219_ADDRESS,
+        INA219_SHUNT_RESISTOR,
     );
 
     ina219_device.reset().await.unwrap();
 
     ina219_device
         .write_config(
-            ina219::Ina219Config::default()
-                .with_brng(ina219::Ina219Brng::Brng32V)
-                .with_pga(ina219::Ina219Pga::Pga80mV)
-                .with_badc(ina219::Ina219Adc::Adc12_16)
-                .with_sadc(ina219::Ina219Adc::Adc12_16),
+            Ina219Config::default()
+                .with_brng(Ina219Brng::Brng32V)
+                .with_pga(Ina219Pga::Pga80mV)
+                .with_badc(Ina219Adc::Adc12_16)
+                .with_sadc(Ina219Adc::Adc12_16),
         )
         .await
         .unwrap();
+
+    // Store config as U16 for BLE
+    INA219_CONFIG.store(ina219_device.config.0, Ordering::Relaxed);
 
     let (brng, pga, badc, sadc) = ina219_device.config.as_str();
     defmt::info!(
@@ -143,23 +161,41 @@ async fn main(spawner: Spawner) {
     spawner.spawn(ble_task::ble_task(spawner.clone(), peripherals.BT).expect("spawn: ble_task"));
 
     let mut ticker = Ticker::every(Duration::from_millis(100));
-    let mut reading = ina219::Ina219Reading {
-        bus_v: 0.0,
-        shunt_ma: 0.0,
-    };
-    let mut avg = heapless::Deque::<ina219::Ina219Reading, 10>::new();
+    let mut reading = Ina219Reading::default();
+    let mut avg = heapless::Deque::<Ina219Reading, 10>::new();
 
     loop {
         match select(ticker.next(), encoder_rx.receive()).await {
             Either::First(_) => {
-                // Update display
-                reading = update_display(
+                // Update reading/display
+                reading = update(
                     &mut lcd_tx,
                     reading.clone(),
                     ina219_device.read().await,
                     &ina219_device.config.as_str(),
                 )
                 .await;
+                POWER_INSTANT.store(u64::from_le_bytes(reading.to_bytes()), Ordering::Relaxed);
+                if avg.is_full() {
+                    let (v, i) = avg
+                        .iter()
+                        .fold((0.0, 0.0), |a, e| (a.0 + e.bus_v, a.1 + e.shunt_ma));
+                    let reading_avg = Ina219Reading {
+                        bus_v: v / avg.len() as f32,
+                        shunt_ma: i / v / avg.len() as f32,
+                    };
+                    POWER_AVG.store(
+                        u64::from_le_bytes(reading_avg.to_bytes()),
+                        Ordering::Relaxed,
+                    );
+                    defmt::info!(
+                        "AVG: {{ \"bus_v\": {}V, \"shunt_ma\": {}mA }}",
+                        reading_avg.bus_v,
+                        reading_avg.shunt_ma
+                    );
+                    avg.clear();
+                }
+                avg.push_back(reading.clone()).unwrap(); // SAFE
             }
             Either::Second(msg) => match msg {
                 // Handle encoder input
@@ -200,6 +236,8 @@ async fn main(spawner: Spawner) {
                         }
                         _ => {}
                     }
+                    // Write to static
+                    INA219_CONFIG.store(ina219_device.config.0, Ordering::Relaxed);
                 }
                 EncoderMsg::Increment => {
                     ENCODER.fetch_add(1, Ordering::Relaxed);
@@ -209,28 +247,15 @@ async fn main(spawner: Spawner) {
                 }
             },
         }
-        if avg.is_full() {
-            let (v, i) = avg.iter().fold((0.0, 0.0), |a, e| {
-                (a.0 + e.bus_v, a.1 + e.shunt_ma / 1000.0)
-            });
-            VI_SIGNAL.signal((v / avg.len() as f32, i / avg.len() as f32));
-            defmt::info!(
-                "AVG: {{ \"v\": {}, \"i\": {} }}",
-                v / avg.len() as f32,
-                i / avg.len() as f32
-            );
-            avg.clear();
-        }
-        avg.push_back(reading.clone()).unwrap(); // SAFE
     }
 }
 
-async fn update_display(
+async fn update(
     lcd_tx: &mut LcdSender,
-    previous: ina219::Ina219Reading,
-    reading: Result<ina219::Ina219Reading, ina219::Ina219Error>,
+    previous: Ina219Reading,
+    reading: Result<Ina219Reading, Ina219Error>,
     status: &(&str, &str, &str, &str),
-) -> ina219::Ina219Reading {
+) -> Ina219Reading {
     let mut next = previous;
 
     // Clear screen
@@ -243,7 +268,7 @@ async fn update_display(
         Ok(r) => {
             next = r;
         }
-        Err(ina219::Ina219Error::NotReady) => {
+        Err(Ina219Error::NotReady) => {
             lcd_tx
                 .send((
                     LcdMessage::Static("Not Ready", Point::new(10, 105), 14, Rgb565::RED),
@@ -251,7 +276,7 @@ async fn update_display(
                 ))
                 .await;
         }
-        Err(ina219::Ina219Error::Overflow) => {
+        Err(Ina219Error::Overflow) => {
             lcd_tx
                 .send((
                     LcdMessage::Static("Overflow", Point::new(10, 105), 14, Rgb565::RED),
@@ -259,7 +284,7 @@ async fn update_display(
                 ))
                 .await;
         }
-        Err(ina219::Ina219Error::I2cError) => {
+        Err(Ina219Error::I2cError) => {
             lcd_tx
                 .send((
                     LcdMessage::Static("I2C Error", Point::new(10, 105), 14, Rgb565::RED),
@@ -287,7 +312,7 @@ async fn update_display(
         ))
         .await;
     let mut p_txt = heapless::String::<40>::new();
-    let _ = write!(&mut p_txt, "{:>8.3}mW", next.bus_v * next.shunt_ma);
+    let _ = write!(&mut p_txt, "{:>8.3}mW", next.power_mw());
     lcd_tx
         .send((
             LcdMessage::Text(p_txt, Point::new(140, 85), 24, Rgb565::WHITE),

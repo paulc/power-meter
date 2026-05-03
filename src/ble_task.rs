@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::Ordering;
 use defmt::{error, info, warn};
 use embassy_executor::Spawner;
 use embassy_futures::select::select;
@@ -8,35 +8,31 @@ use esp_radio::ble::controller::BleConnector;
 use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
-/// Static counter that increments on each read
-pub static COUNTER: AtomicU32 = AtomicU32::new(0);
+use crate::{INA219_CONFIG, POWER_AVG, POWER_INSTANT};
 
-const DEVICE_NAME: &'static str = "ESP32C6-COUNTER";
+const DEVICE_NAME: &'static str = "POWER_METER";
 
 // GATT Server
 #[gatt_server]
-struct CounterServer {
-    counter_service: CounterService,
+struct PowerMeterServer {
+    power_meter_service: PowerMeterService,
 }
 
 /// GATT Service table definition
-#[gatt_service(uuid = "00000001-7104-4a99-8a78-02108a60f098")]
-pub struct CounterService {
-    #[characteristic(uuid = "00000002-7104-4a99-8a78-02108a60f098", read, write)]
-    pub counter: u32,
-    #[characteristic(uuid = "00000003-7104-4a99-8a78-02108a60f098", read, write, value = [b'A';16])]
-    pub name: [u8; 16],
-    #[characteristic(uuid = "00000004-7104-4a99-8a78-02108a60f098", read, write, notify)]
-    pub notify: u32,
-    #[characteristic(uuid = "00000005-7104-4a99-8a78-02108a60f098", read, write)]
-    pub c5: bool,
-    #[characteristic(uuid = "00000006-7104-4a99-8a78-02108a60f098", read, write)]
-    pub c6: f32,
+#[gatt_service(uuid = "00000001-9b04-4347-98ff-57e8f7803509")]
+pub struct PowerMeterService {
+    #[characteristic(uuid = "00000002-9b04-4347-98ff-57e8f7803509", read)]
+    pub power_instant: [u8; 8],
+    #[characteristic(uuid = "00000003-9b04-4347-98ff-57e8f7803509", read, notify)]
+    pub power_average: [u8; 8],
+    #[characteristic(uuid = "00000004-9b04-4347-98ff-57e8f7803509", read, write)]
+    pub config: u16,
 }
 
 const CONNECTIONS_MAX: usize = 1;
 const L2CAP_CHANNELS_MAX: usize = 2; // Signal + att
 const ADV_SETS_MAX: usize = 1;
+
 #[embassy_executor::task]
 pub async fn ble_task(spawner: Spawner, bluetooth: esp_hal::peripherals::BT<'static>) {
     // Initialise BT
@@ -71,7 +67,7 @@ pub async fn ble_task(spawner: Spawner, bluetooth: esp_hal::peripherals::BT<'sta
     let mut peripheral = stack.peripheral();
 
     info!("Starting Advertising and GATT service");
-    let server = CounterServer::new_with_config(GapConfig::Peripheral(PeripheralConfig {
+    let server = PowerMeterServer::new_with_config(GapConfig::Peripheral(PeripheralConfig {
         name: DEVICE_NAME,
         appearance: &appearance::sensor::GENERIC_SENSOR,
     }))
@@ -107,7 +103,7 @@ async fn ble_runner_task(
 
 /// Handle GATT events
 async fn gatt_events_task<P: PacketPool>(
-    server: &CounterServer<'_>,
+    server: &PowerMeterServer<'_>,
     conn: &GattConnection<'_, '_, P>,
 ) -> Result<(), Error> {
     let reason = loop {
@@ -116,15 +112,33 @@ async fn gatt_events_task<P: PacketPool>(
             GattConnectionEvent::Gatt { event } => {
                 match &event {
                     GattEvent::Read(event) => {
-                        info!("[gatt] Read Event: {:?}", event.handle());
-                        if event.handle() == server.counter_service.counter.handle() {
-                            if let Err(_e) = server.set(
-                                &server.counter_service.counter,
-                                &COUNTER.load(Ordering::Relaxed),
-                            ) {
-                                // error!("[gatt] Set server.counter_service.counter: {:?}", e)
-                                error!("[gatt] Set server.counter_service.counter:")
+                        if event.handle() == server.power_meter_service.power_instant.handle() {
+                            let p_instant = POWER_INSTANT.load(Ordering::Relaxed).to_le_bytes();
+                            info!("[gatt] Read power_instant -> {}", to_hex(&p_instant));
+                            if let Err(_e) =
+                                server.set(&server.power_meter_service.power_instant, &p_instant)
+                            {
+                                error!("[gatt] Update power_meter_service.power_instant")
                             }
+                        } else if event.handle()
+                            == server.power_meter_service.power_average.handle()
+                        {
+                            let p_avg = POWER_AVG.load(Ordering::Relaxed).to_le_bytes();
+                            info!("[gatt] Read power_average -> {}", to_hex(&p_avg));
+                            if let Err(_e) =
+                                server.set(&server.power_meter_service.power_average, &p_avg)
+                            {
+                                error!("[gatt] Update power_meter_service.power_average")
+                            }
+                        } else if event.handle() == server.power_meter_service.config.handle() {
+                            let config = INA219_CONFIG.load(Ordering::Relaxed);
+                            info!("[gatt] Read config -> 0x{:x}", config);
+                            if let Err(_e) = server.set(&server.power_meter_service.config, &config)
+                            {
+                                error!("[gatt] Update power_meter_service.config")
+                            }
+                        } else {
+                            info!("[gatt] Read Event: {:?}", event.handle());
                         }
                     }
                     GattEvent::Write(event) => {
@@ -148,18 +162,22 @@ async fn gatt_events_task<P: PacketPool>(
 }
 
 async fn notify_task<C: Controller, P: PacketPool>(
-    server: &CounterServer<'_>,
+    server: &PowerMeterServer<'_>,
     conn: &GattConnection<'_, '_, P>,
     _stack: &Stack<'_, C, P>,
 ) {
-    let characteristic = server.counter_service.notify;
+    let characteristic = server.power_meter_service.power_average;
     loop {
-        let v = characteristic.get(server).unwrap_or(0_u32) + 1;
-        if characteristic.notify(conn, &v).await.is_err() {
-            error!("Notify Error");
+        let p_avg = POWER_AVG.load(Ordering::Relaxed).to_le_bytes();
+        if characteristic.notify(conn, &p_avg).await.is_err() {
+            error!("Notify Error: server.power_meter_service.power_average");
             break;
+        } else {
+            info!(
+                "Notify: server.power_meter_service.power_average -> {}",
+                to_hex(&p_avg)
+            );
         }
-        info!("Notify: {}", v);
         Timer::after(Duration::from_secs(5)).await;
     }
 }
@@ -168,7 +186,7 @@ async fn notify_task<C: Controller, P: PacketPool>(
 async fn advertise<'values, 'server, C: Controller>(
     name: &'values str,
     peripheral: &mut Peripheral<'values, C, DefaultPacketPool>,
-    server: &'server CounterServer<'values>,
+    server: &'server PowerMeterServer<'values>,
 ) -> Result<GattConnection<'values, 'server, DefaultPacketPool>, BleHostError<C::Error>> {
     let mut advertiser_data = [0; 31];
     let len = AdStructure::encode_slice(
