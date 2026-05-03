@@ -1,16 +1,18 @@
-use core::sync::atomic::Ordering;
 use defmt::{error, info, warn};
 use embassy_executor::Spawner;
 use embassy_futures::select::select;
 use embassy_time::{Duration, Timer};
 use esp_hal::rng::Rng;
 use esp_radio::ble::controller::BleConnector;
+use portable_atomic::{AtomicU16, AtomicU64, Ordering};
 use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
-use crate::{INA219_CONFIG, POWER_AVG, POWER_INSTANT};
+pub static POWER_INSTANT: AtomicU64 = AtomicU64::new(0);
+pub static POWER_AVG: AtomicU64 = AtomicU64::new(0);
+pub static INA219_CONFIG: AtomicU16 = AtomicU16::new(0);
 
-const DEVICE_NAME: &'static str = "POWER_METER";
+const DEVICE_NAME: &str = "POWER_METER";
 
 // GATT Server
 #[gatt_server]
@@ -82,7 +84,7 @@ pub async fn ble_task(spawner: Spawner, bluetooth: esp_hal::peripherals::BT<'sta
                 info!("Connection");
                 // Create GATT & Notify tasks
                 let gatt_task = gatt_events_task(&server, &conn);
-                let notify_task = notify_task(&server, &conn, &stack);
+                let notify_task = notify_task(&server, &conn, stack);
                 // Wait for task to exit
                 select(gatt_task, notify_task).await;
             }

@@ -45,6 +45,7 @@ pub type LcdSender = Sender<'static, NoopRawMutex, (LcdMessage, bool), 1>;
 
 // Init C6 display
 // (Note - peripherals are fixed to make ownership easier)
+#[allow(clippy::too_many_arguments)]
 pub async fn init_lcd(
     dc: esp_hal::peripherals::GPIO15<'static>, // DC (Data/Command)
     cs: esp_hal::peripherals::GPIO14<'static>, // CS (Chip Select)

@@ -5,6 +5,14 @@ name         = "power-monitor"
 rust-version = "1.88"
 version      = "0.1.0"
 
+[lib]
+harness = false
+
+[[bin]]
+name = "power-monitor"
+path = "src/main.rs"
+harness = false
+
 [features]
 # Need to set chip otherwise rust-analyzer gets confused
 # (override using cargo build/run --no-default-features --features ...)

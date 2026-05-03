@@ -24,17 +24,13 @@ use embedded_graphics::{
 };
 use esp_alloc as _;
 use esp_backtrace as _;
-use portable_atomic::{AtomicI32, AtomicU16, AtomicU64, Ordering};
+use portable_atomic::{AtomicI32, Ordering};
 use static_cell::StaticCell;
 
-mod ble_task;
-mod c6_lcd;
-mod encoder;
-mod ina219;
-
-use c6_lcd::{init_lcd, LcdMessage, LcdSender};
-use encoder::EncoderMsg;
-use ina219::*;
+use power_monitor::ble_task::{ble_task, INA219_CONFIG, POWER_AVG, POWER_INSTANT};
+use power_monitor::c6_lcd::{init_lcd, LcdMessage, LcdSender};
+use power_monitor::encoder::{self, EncoderMsg};
+use power_monitor::ina219::*;
 
 extern crate alloc;
 
@@ -44,9 +40,6 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 static I2C_BUS: StaticCell<Mutex<NoopRawMutex, i2c::master::I2c<Async>>> = StaticCell::new();
 static ENCODER: AtomicI32 = AtomicI32::new(0);
-static POWER_INSTANT: AtomicU64 = AtomicU64::new(0);
-static POWER_AVG: AtomicU64 = AtomicU64::new(0);
-static INA219_CONFIG: AtomicU16 = AtomicU16::new(0);
 
 #[embassy_executor::task]
 async fn memory_task() {
@@ -91,7 +84,7 @@ async fn main(spawner: Spawner) {
         peripherals.GPIO22,  // Backlight
         peripherals.SPI2,    // SPI Device
         peripherals.DMA_CH0, // DMA device
-        spawner.clone(),
+        spawner,
     )
     .await
     .unwrap();
@@ -108,7 +101,7 @@ async fn main(spawner: Spawner) {
 
     defmt::info!("Scan I2C bus: START");
     for addr in 0..=127 {
-        if let Ok(_) = i2c.write_async(addr, &[0]).await {
+        if i2c.write_async(addr, &[0]).await.is_ok() {
             defmt::info!("Found I2C device at address: 0x{:02x}", addr);
         }
         Timer::after_millis(5).await;
@@ -151,14 +144,14 @@ async fn main(spawner: Spawner) {
 
     // Rotary encoder
     let encoder_rx = encoder::init(
-        spawner.clone(),
+        spawner,
         peripherals.GPIO18.degrade(),
         peripherals.GPIO19.degrade(),
         peripherals.GPIO20.degrade(),
     );
 
     // BLE Task
-    spawner.spawn(ble_task::ble_task(spawner.clone(), peripherals.BT).expect("spawn: ble_task"));
+    spawner.spawn(ble_task(spawner, peripherals.BT).expect("spawn: ble_task"));
 
     let mut ticker = Ticker::every(Duration::from_millis(100));
     let mut reading = Ina219Reading::default();

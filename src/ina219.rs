@@ -167,11 +167,14 @@ impl Ina219Reading {
 #[derive(Debug, Clone)]
 pub struct Ina219Config(pub u16);
 
-impl Ina219Config {
+impl Default for Ina219Config {
     // Default = 32V FSR, PGA/8, 12bit ADC, Shunt & Bus continuous
-    pub fn default() -> Self {
+    fn default() -> Self {
         Self(0x399f)
     }
+}
+
+impl Ina219Config {
     pub fn with_brng(&self, brng: Ina219Brng) -> Self {
         Self(set_bits(self.0, brng as u16, BRNG_OFFSET, BRNG_WIDTH))
     }
