@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>INA219 Config Encoder / Decoder</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #38bdf8;
+    --accent2: #818cf8;
+    --brng: #f472b6;
+    --pga: #a78bfa;
+    --badc: #34d399;
+    --sadc: #fbbf24;
+    --mode: #94a3b8;
+    --border: #334155;
+    --input-bg: #0f172a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 2rem 1rem;
+    min-height: 100vh;
+  }
+  .container { max-width: 900px; margin: 0 auto; }
+  h1 {
+    text-align: center;
+    font-size: 1.5rem;
+    margin-bottom: 0.25rem;
+    color: var(--accent);
+    letter-spacing: 0.05em;
+  }
+  .subtitle {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.85rem;
+    margin-bottom: 2rem;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+  }
+  @media (max-width: 768px) {
+    .grid { grid-template-columns: 1fr; }
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    padding: 1.25rem;
+  }
+  .card h2 {
+    font-size: 1rem;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+    color: var(--accent2);
+  }
+  .field {
+    margin-bottom: 1rem;
+  }
+  label {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-bottom: 0.35rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  select, input[type="text"] {
+    width: 100%;
+    padding: 0.6rem 0.75rem;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 0.95rem;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  select:focus, input:focus {
+    border-color: var(--accent);
+  }
+  .result-box {
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    padding: 0.75rem;
+    margin-top: 0.5rem;
+    font-size: 0.9rem;
+  }
+  .result-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.35rem 0;
+    border-bottom: 1px solid #1e293b;
+  }
+  .result-row:last-child { border-bottom: none; }
+  .result-label { color: var(--muted); font-size: 0.8rem; }
+  .result-value {
+    font-weight: 600;
+    color: var(--accent);
+    font-size: 0.95rem;
+    cursor: pointer;
+    user-select: all;
+  }
+  .result-value:hover { opacity: 0.85; }
+
+  .bitmap {
+    margin-top: 1.5rem;
+    padding: 1rem;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    overflow-x: auto;
+  }
+  .bitmap-title {
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-bottom: 0.75rem;
+    text-align: center;
+  }
+  .bits {
+    display: flex;
+    justify-content: center;
+    gap: 0.25rem;
+    min-width: max-content;
+  }
+  .bit {
+    width: 2.2rem;
+    text-align: center;
+  }
+  .bit-index {
+    font-size: 0.65rem;
+    color: var(--muted);
+    margin-bottom: 0.25rem;
+  }
+  .bit-cell {
+    padding: 0.4rem 0;
+    border-radius: 0.35rem;
+    font-weight: 700;
+    font-size: 0.85rem;
+    border: 1px solid rgba(255,255,255,0.05);
+  }
+  .bit-brng { background: rgba(244, 114, 182, 0.15); color: var(--brng); border-color: var(--brng); }
+  .bit-pga  { background: rgba(167, 139, 250, 0.15); color: var(--pga);  border-color: var(--pga); }
+  .bit-badc { background: rgba(52, 211, 153, 0.15); color: var(--badc); border-color: var(--badc); }
+  .bit-sadc { background: rgba(251, 191, 36, 0.15);  color: var(--sadc); border-color: var(--sadc); }
+  .bit-mode { background: rgba(148, 163, 184, 0.10); color: var(--mode); border-color: var(--mode); }
+  .bit-res  { background: rgba(148, 163, 184, 0.05); color: var(--muted); border-color: var(--muted); }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    justify-content: center;
+    margin-top: 0.75rem;
+    font-size: 0.75rem;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+  .legend-dot {
+    width: 0.6rem;
+    height: 0.6rem;
+    border-radius: 0.15rem;
+    border: 1px solid currentColor;
+  }
+
+  .decode-input-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: stretch;
+  }
+  .decode-input-row select {
+    width: 8.5rem;
+    flex-shrink: 0;
+  }
+  .decode-input-row input {
+    flex: 1;
+  }
+  .error {
+    color: #f87171;
+    font-size: 0.8rem;
+    margin-top: 0.25rem;
+  }
+
+  .copy-hint {
+    font-size: 0.7rem;
+    color: var(--muted);
+    text-align: center;
+    margin-top: 0.5rem;
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+  .copy-hint.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>INA219 Config Encoder / Decoder</h1>
+  <div class="subtitle">Register 0x00 &mdash; BRNG &middot; PGA &middot; BADC &middot; SADC</div>
+
+  <div class="grid">
+    <!-- Encode -->
+    <div class="card">
+      <h2>Encode Settings</h2>
+
+      <div class="field">
+        <label for="enc-brng">BRNG (Bus Voltage Range)</label>
+        <select id="enc-brng"></select>
+      </div>
+      <div class="field">
+        <label for="enc-pga">PGA (Shunt Voltage Gain)</label>
+        <select id="enc-pga"></select>
+      </div>
+      <div class="field">
+        <label for="enc-badc">BADC (Bus ADC Resolution)</label>
+        <select id="enc-badc"></select>
+      </div>
+      <div class="field">
+        <label for="enc-sadc">SADC (Shunt ADC Resolution)</label>
+        <select id="enc-sadc"></select>
+      </div>
+
+      <div class="result-box">
+        <div class="result-row"><span class="result-label">Decimal</span><span class="result-value" id="res-dec" onclick="copyText(this)">0</span></div>
+        <div class="result-row"><span class="result-label">Hex (BE)</span><span class="result-value" id="res-hex-be" onclick="copyText(this)">0x0000</span></div>
+        <div class="result-row"><span class="result-label">Hex (LE)</span><span class="result-value" id="res-hex-le" onclick="copyText(this)">0x0000</span></div>
+        <div class="result-row"><span class="result-label">I2C Command (BE)</span><span class="result-value" id="res-cmd" onclick="copyText(this)">[0x00, 0x00, 0x00]</span></div>
+      </div>
+      <div class="copy-hint" id="copy-hint">Copied to clipboard</div>
+    </div>
+
+    <!-- Decode -->
+    <div class="card">
+      <h2>Decode Value</h2>
+
+      <div class="field">
+        <label>Raw u16 Value</label>
+        <div class="decode-input-row">
+          <select id="dec-fmt">
+            <option value="dec">Decimal</option>
+            <option value="hex-be">Hex (BE)</option>
+            <option value="hex-le">Hex (LE)</option>
+          </select>
+          <input type="text" id="dec-input" placeholder="e.g. 0x399f or 14751" value="0x399f">
+        </div>
+        <div class="error" id="dec-error"></div>
+      </div>
+
+      <div class="result-box">
+        <div class="result-row"><span class="result-label">BRNG</span><span class="result-value" id="dec-brng">-</span></div>
+        <div class="result-row"><span class="result-label">PGA</span><span class="result-value" id="dec-pga">-</span></div>
+        <div class="result-row"><span class="result-label">BADC</span><span class="result-value" id="dec-badc">-</span></div>
+        <div class="result-row"><span class="result-label">SADC</span><span class="result-value" id="dec-sadc">-</span></div>
+        <div class="result-row"><span class="result-label">Mode (bits 2:0)</span><span class="result-value" id="dec-mode">-</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bitmap -->
+  <div class="bitmap">
+    <div class="bitmap-title">16-bit Register Map</div>
+    <div class="bits" id="bits-container"></div>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:rgba(244,114,182,0.15);color:var(--brng);border-color:var(--brng)"></div>BRNG</div>
+      <div class="legend-item"><div class="legend-dot" style="background:rgba(167,139,250,0.15);color:var(--pga);border-color:var(--pga)"></div>PGA</div>
+      <div class="legend-item"><div class="legend-dot" style="background:rgba(52,211,153,0.15);color:var(--badc);border-color:var(--badc)"></div>BADC</div>
+      <div class="legend-item"><div class="legend-dot" style="background:rgba(251,191,36,0.15);color:var(--sadc);border-color:var(--sadc)"></div>SADC</div>
+      <div class="legend-item"><div class="legend-dot" style="background:rgba(148,163,184,0.10);color:var(--mode);border-color:var(--mode)"></div>Mode</div>
+      <div class="legend-item"><div class="legend-dot" style="background:rgba(148,163,184,0.05);color:var(--muted);border-color:var(--muted)"></div>Reserved</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===== Constants & Enums =====
+const BRNG_OPTS = [
+  { value: 0, text: "16V" },
+  { value: 1, text: "32V" },
+];
+
+const PGA_OPTS = [
+  { value: 0, text: "40mV" },
+  { value: 1, text: "80mV" },
+  { value: 2, text: "160mV" },
+  { value: 3, text: "320mV" },
+];
+
+const ADC_OPTS = [
+  { value: 0,  text: "9-bit" },
+  { value: 1,  text: "10-bit" },
+  { value: 2,  text: "11-bit" },
+  { value: 3,  text: "12-bit" },
+  { value: 8,  text: "12-bit (1 sample)" },
+  { value: 9,  text: "12-bit (2 samples)" },
+  { value: 10, text: "12-bit (4 samples)" },
+  { value: 11, text: "12-bit (8 samples)" },
+  { value: 12, text: "12-bit (16 samples)" },
+  { value: 13, text: "12-bit (32 samples)" },
+  { value: 14, text: "12-bit (64 samples)" },
+  { value: 15, text: "12-bit (128 samples)" },
+];
+
+const BRNG_OFF = 13, BRNG_W = 1;
+const PGA_OFF  = 11, PGA_W  = 2;
+const BADC_OFF = 7,  BADC_W = 4;
+const SADC_OFF = 3,  SADC_W = 4;
+
+// ===== Bit helpers =====
+function setBits(val, field, off, w) {
+  const mask = ((1 << w) - 1) << off;
+  return (val & ~mask) | ((field & ((1 << w) - 1)) << off);
+}
+function getBits(val, off, w) {
+  return (val >> off) & ((1 << w) - 1);
+}
+function swap16(v) {
+  return ((v & 0xFF) << 8) | ((v >> 8) & 0xFF);
+}
+
+// ===== Populate selects =====
+function fillSelect(id, opts, def) {
+  const sel = document.getElementById(id);
+  opts.forEach(o => {
+    const opt = document.createElement("option");
+    opt.value = o.value;
+    opt.textContent = o.text;
+    sel.appendChild(opt);
+  });
+  sel.value = def;
+}
+
+fillSelect("enc-brng", BRNG_OPTS, 1);  // 32V default (0x399f)
+fillSelect("enc-pga",  PGA_OPTS,  3);  // 320mV
+fillSelect("enc-badc", ADC_OPTS,  3);  // 12-bit
+fillSelect("enc-sadc", ADC_OPTS,  3);  // 12-bit
+
+// ===== Encode =====
+function encode() {
+  let v = 0;
+  v = setBits(v, +document.getElementById("enc-brng").value, BRNG_OFF, BRNG_W);
+  v = setBits(v, +document.getElementById("enc-pga").value,  PGA_OFF,  PGA_W);
+  v = setBits(v, +document.getElementById("enc-badc").value, BADC_OFF, BADC_W);
+  v = setBits(v, +document.getElementById("enc-sadc").value, SADC_OFF, SADC_W);
+  // Set mode=7 (continuous shunt+bus) to match typical usage.
+  v = setBits(v, 7, 0, 3);
+
+  const vLe = swap16(v);
+
+  document.getElementById("res-dec").textContent = v.toString(10);
+  document.getElementById("res-hex-be").textContent = "0x" + v.toString(16).padStart(4, "0");
+  document.getElementById("res-hex-le").textContent = "0x" + vLe.toString(16).padStart(4, "0");
+  // Big-endian I2C command: register, MSB, LSB  (matches Rust to_be_bytes)
+  const b = [(v >> 8) & 0xFF, v & 0xFF];
+  document.getElementById("res-cmd").textContent = `[0x00, 0x${b[0].toString(16).padStart(2,"0")}, 0x${b[1].toString(16).padStart(2,"0")}]`;
+
+  renderBits(v);
+  return v;
+}
+
+// ===== Decode =====
+function decode() {
+  const raw = document.getElementById("dec-input").value.trim();
+  const fmt = document.getElementById("dec-fmt").value;
+  const errEl = document.getElementById("dec-error");
+  let v = NaN;
+
+  if (!raw) { errEl.textContent = ""; clearDecode(); return; }
+
+  if (fmt === "dec") {
+    v = parseInt(raw, 10);
+  } else if (fmt === "hex-be") {
+    v = parseInt(raw.replace(/^0x/i, ""), 16);
+  } else if (fmt === "hex-le") {
+    const le = parseInt(raw.replace(/^0x/i, ""), 16);
+    if (!isNaN(le)) v = swap16(le);
+  }
+
+  if (isNaN(v) || v < 0 || v > 0xFFFF) {
+    errEl.textContent = "Invalid u16 value";
+    clearDecode();
+    return;
+  }
+  errEl.textContent = "";
+
+  const brng = getBits(v, BRNG_OFF, BRNG_W);
+  const pga  = getBits(v, PGA_OFF,  PGA_W);
+  const badc = getBits(v, BADC_OFF, BADC_W);
+  const sadc = getBits(v, SADC_OFF, SADC_W);
+  const mode = getBits(v, 0, 3);
+
+  document.getElementById("dec-brng").textContent = (BRNG_OPTS.find(o => o.value === brng)?.text ?? "Unknown") + ` (${brng})`;
+  document.getElementById("dec-pga").textContent  = (PGA_OPTS.find(o => o.value === pga)?.text  ?? "Unknown") + ` (${pga})`;
+  document.getElementById("dec-badc").textContent = (ADC_OPTS.find(o => o.value === badc)?.text ?? "Unknown") + ` (${badc})`;
+  document.getElementById("dec-sadc").textContent = (ADC_OPTS.find(o => o.value === sadc)?.text ?? "Unknown") + ` (${sadc})`;
+  document.getElementById("dec-mode").textContent = `${mode} (0b${mode.toString(2).padStart(3,"0")})`;
+
+  renderBits(v);
+}
+
+function clearDecode() {
+  document.getElementById("dec-brng").textContent = "-";
+  document.getElementById("dec-pga").textContent = "-";
+  document.getElementById("dec-badc").textContent = "-";
+  document.getElementById("dec-sadc").textContent = "-";
+  document.getElementById("dec-mode").textContent = "-";
+}
+
+// ===== Bitmap =====
+function renderBits(v) {
+  const container = document.getElementById("bits-container");
+  container.innerHTML = "";
+  for (let i = 15; i >= 0; i--) {
+    const bit = (v >> i) & 1;
+    let cls = "bit-res";
+    if (i === 13) cls = "bit-brng";
+    else if (i === 12 || i === 11) cls = "bit-pga";
+    else if (i >= 7 && i <= 10) cls = "bit-badc";
+    else if (i >= 3 && i <= 6) cls = "bit-sadc";
+    else if (i >= 0 && i <= 2) cls = "bit-mode";
+
+    const wrap = document.createElement("div");
+    wrap.className = "bit";
+    wrap.innerHTML = `<div class="bit-index">${i}</div><div class="bit-cell ${cls}">${bit}</div>`;
+    container.appendChild(wrap);
+  }
+}
+
+// ===== Copy =====
+function copyText(el) {
+  const text = el.textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    const hint = document.getElementById("copy-hint");
+    hint.classList.add("show");
+    setTimeout(() => hint.classList.remove("show"), 1200);
+  });
+}
+
+// ===== Events =====
+["enc-brng", "enc-pga", "enc-badc", "enc-sadc"].forEach(id => {
+  document.getElementById(id).addEventListener("change", encode);
+});
+document.getElementById("dec-input").addEventListener("input", decode);
+document.getElementById("dec-fmt").addEventListener("change", decode);
+
+// ===== Init =====
+encode();
+decode();
+</script>
+</body>
+</html>

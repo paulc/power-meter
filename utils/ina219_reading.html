@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>INA219 Reading Decoder</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #38bdf8;
+    --accent2: #818cf8;
+    --bus: #34d399;
+    --shunt: #fbbf24;
+    --power: #f472b6;
+    --border: #334155;
+    --input-bg: #0f172a;
+    --ok: #34d399;
+    --warn: #fbbf24;
+    --err: #f87171;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 2rem 1rem;
+    min-height: 100vh;
+  }
+  .container { max-width: 720px; margin: 0 auto; }
+  h1 {
+    text-align: center;
+    font-size: 1.5rem;
+    margin-bottom: 0.25rem;
+    color: var(--accent);
+    letter-spacing: 0.05em;
+  }
+  .subtitle {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.85rem;
+    margin-bottom: 2rem;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    padding: 1.25rem;
+    margin-bottom: 1.5rem;
+  }
+  .card h2 {
+    font-size: 1rem;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+    color: var(--accent2);
+  }
+  .field { margin-bottom: 1rem; }
+  label {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-bottom: 0.35rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  select, input[type="text"], button {
+    padding: 0.6rem 0.75rem;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 0.95rem;
+    outline: none;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  select:focus, input:focus { border-color: var(--accent); }
+  button {
+    cursor: pointer;
+    background: var(--accent);
+    color: #0f172a;
+    border: none;
+    font-weight: 600;
+    padding: 0.6rem 1rem;
+  }
+  button:hover { opacity: 0.9; }
+  button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  button.disconnect {
+    background: var(--err);
+    color: #fff;
+  }
+  button.toggle-btn {
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    font-size: 0.8rem;
+    padding: 0.35rem 0.6rem;
+    font-weight: 400;
+  }
+  button.toggle-btn:hover { color: var(--text); border-color: var(--muted); }
+
+  .input-row {
+    display: flex;
+    gap: 0.5rem;
+    align-items: stretch;
+  }
+  .input-row select { width: 10rem; flex-shrink: 0; }
+  .input-row input { flex: 1; }
+  .input-row button { flex-shrink: 0; }
+
+  .result-box {
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    padding: 0.75rem;
+    margin-top: 0.5rem;
+    font-size: 0.95rem;
+  }
+  .result-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.45rem 0;
+    border-bottom: 1px solid #1e293b;
+  }
+  .result-row:last-child { border-bottom: none; }
+  .result-label { color: var(--muted); font-size: 0.85rem; }
+  .result-value {
+    font-weight: 600;
+    font-size: 1rem;
+    cursor: pointer;
+    user-select: all;
+  }
+  .result-value:hover { opacity: 0.85; }
+  .val-bus { color: var(--bus); }
+  .val-shunt { color: var(--shunt); }
+  .val-power { color: var(--power); }
+
+  .error {
+    color: var(--err);
+    font-size: 0.8rem;
+    margin-top: 0.25rem;
+  }
+
+  .copy-hint {
+    font-size: 0.7rem;
+    color: var(--muted);
+    text-align: center;
+    margin-top: 0.5rem;
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+  .copy-hint.show { opacity: 1; }
+
+  .sse-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 0.5rem;
+  }
+  .sse-status {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+  .sse-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background: var(--muted);
+  }
+  .sse-dot.connected { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  .sse-dot.connecting { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
+  .sse-dot.error { background: var(--err); box-shadow: 0 0 6px var(--err); }
+
+  .event-log {
+    margin-top: 1rem;
+    max-height: 8rem;
+    overflow-y: auto;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+  .event-log.hidden { display: none; }
+  .event-log-entry {
+    padding: 0.15rem 0;
+    border-bottom: 1px solid #1e293b;
+  }
+  .event-log-entry:last-child { border-bottom: none; }
+  .event-time { color: var(--accent); margin-right: 0.5rem; }
+
+  .byte-map {
+    margin-top: 1.5rem;
+    padding: 1rem;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    overflow-x: auto;
+  }
+  .byte-map-title {
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-bottom: 0.75rem;
+    text-align: center;
+  }
+  .bytes {
+    display: flex;
+    justify-content: center;
+    gap: 0.25rem;
+    min-width: max-content;
+  }
+  .byte {
+    width: 3.2rem;
+    text-align: center;
+  }
+  .byte-index {
+    font-size: 0.65rem;
+    color: var(--muted);
+    margin-bottom: 0.25rem;
+  }
+  .byte-cell {
+    padding: 0.4rem 0;
+    border-radius: 0.35rem;
+    font-weight: 700;
+    font-size: 0.85rem;
+    border: 1px solid rgba(255,255,255,0.05);
+  }
+  .byte-bus { background: rgba(52, 211, 153, 0.12); color: var(--bus); border-color: var(--bus); }
+  .byte-shunt { background: rgba(251, 191, 36, 0.12); color: var(--shunt); border-color: var(--shunt); }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    justify-content: center;
+    margin-top: 0.75rem;
+    font-size: 0.75rem;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+  .legend-dot {
+    width: 0.6rem;
+    height: 0.6rem;
+    border-radius: 0.15rem;
+    border: 1px solid currentColor;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>INA219 Reading Decoder</h1>
+  <div class="subtitle">Decode <code>Ina219Reading</code> from <code>[u8; 8]</code>, <code>u64</code>, or SSE stream</div>
+
+  <div class="card">
+    <h2>Decode Input</h2>
+    <div class="field">
+      <label>Input Format</label>
+      <div class="input-row">
+        <select id="fmt">
+          <option value="hex-bytes">Hex Bytes (16 chars)</option>
+          <option value="u64-dec">u64 Decimal</option>
+          <option value="u64-hex">u64 Hex</option>
+          <option value="sse-url">SSE URL</option>
+        </select>
+        <input type="text" id="input" placeholder="e.g. 0x0000000000000000" value="0x0000000000000000">
+        <button id="sse-btn" style="display:none">Connect</button>
+      </div>
+      <div class="sse-controls" id="sse-controls" style="display:none">
+        <div class="sse-status">
+          <div class="sse-dot" id="sse-dot"></div>
+          <span id="sse-text">Disconnected</span>
+        </div>
+        <button class="toggle-btn" id="log-toggle">Hide Log</button>
+      </div>
+      <div class="error" id="error"></div>
+      <div class="event-log hidden" id="event-log"></div>
+    </div>
+
+    <div class="result-box">
+      <div class="result-row">
+        <span class="result-label">bus_v</span>
+        <span class="result-value val-bus" id="out-bus" onclick="copyText(this)">-</span>
+      </div>
+      <div class="result-row">
+        <span class="result-label">shunt_ma</span>
+        <span class="result-value val-shunt" id="out-shunt" onclick="copyText(this)">-</span>
+      </div>
+      <div class="result-row">
+        <span class="result-label">power_mw (bus_v × shunt_ma)</span>
+        <span class="result-value val-power" id="out-power" onclick="copyText(this)">-</span>
+      </div>
+    </div>
+    <div class="copy-hint" id="copy-hint">Copied to clipboard</div>
+  </div>
+
+  <div class="byte-map">
+    <div class="byte-map-title">8-byte Layout (LE)</div>
+    <div class="bytes" id="bytes-container"></div>
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:rgba(52,211,153,0.12);color:var(--bus);border-color:var(--bus)"></div>bus_v (f32 LE)</div>
+      <div class="legend-item"><div class="legend-dot" style="background:rgba(251,191,36,0.12);color:var(--shunt);border-color:var(--shunt)"></div>shunt_ma (f32 LE)</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// CONFIG — Edit these defaults or patch them at serve-time
+// ============================================================
+const CONFIG = {
+  // Possible values: "hex-bytes" | "u64-dec" | "u64-hex" | "sse-url"
+  defaultMode: "sse-url",
+
+  // When defaultMode is "sse-url", this URL is pre-filled.
+  // Set to "" to leave the field empty.
+  defaultSseUrl: "http://127.0.0.1:3000/update",
+
+  // When defaultMode is "sse-url", auto-connect on page load?
+  autoConnect: false,
+};
+// ============================================================
+
+let es = null;
+let logVisible = true;
+
+function setSseStatus(state, text) {
+  const dot = document.getElementById("sse-dot");
+  const txt = document.getElementById("sse-text");
+  dot.className = "sse-dot " + state;
+  txt.textContent = text;
+}
+
+function logEvent(msg) {
+  const log = document.getElementById("event-log");
+  const entry = document.createElement("div");
+  entry.className = "event-log-entry";
+  const t = new Date().toLocaleTimeString();
+  entry.innerHTML = `<span class="event-time">${t}</span>${msg}`;
+  log.prepend(entry);
+  while (log.children.length > 50) log.lastChild.remove();
+}
+
+function disconnectSse() {
+  if (es) {
+    es.close();
+    es = null;
+  }
+  setSseStatus("", "Disconnected");
+  document.getElementById("sse-btn").textContent = "Connect";
+  document.getElementById("sse-btn").classList.remove("disconnect");
+}
+
+function connectSse(url) {
+  disconnectSse();
+  setSseStatus("connecting", "Connecting...");
+  document.getElementById("sse-btn").textContent = "Disconnect";
+  document.getElementById("sse-btn").classList.add("disconnect");
+  logEvent("Connecting to " + url);
+
+  try {
+    es = new EventSource(url);
+  } catch (e) {
+    setSseStatus("error", "Failed to create EventSource");
+    logEvent("Error: " + e.message);
+    disconnectSse();
+    return;
+  }
+
+  es.addEventListener("open", () => {
+    setSseStatus("connected", "Connected");
+    logEvent("Connected");
+  });
+
+  es.addEventListener("update", (e) => {
+    let data;
+    try {
+      data = JSON.parse(e.data);
+    } catch (err) {
+      logEvent("JSON parse error: " + e.data);
+      return;
+    }
+    if (typeof data.value !== "string") {
+      logEvent("Missing value field");
+      return;
+    }
+    logEvent("update: " + data.value);
+    decodeHexBytes(data.value);
+  });
+
+  es.addEventListener("error", (e) => {
+    if (es.readyState === EventSource.CONNECTING) {
+      setSseStatus("connecting", "Reconnecting...");
+    } else if (es.readyState === EventSource.CLOSED) {
+      setSseStatus("error", "Connection closed");
+      logEvent("Connection closed");
+      disconnectSse();
+    } else {
+      setSseStatus("error", "Error");
+      logEvent("SSE error");
+    }
+  });
+}
+
+function decodeHexBytes(raw) {
+  const errEl = document.getElementById("error");
+  let hex = raw.replace(/^0x/i, "").replace(/\s+/g, "");
+  if (hex.length !== 16) {
+    errEl.textContent = "Expected 16 hex characters (8 bytes), got " + hex.length;
+    clearOut();
+    renderBytes(new Uint8Array(8));
+    return false;
+  }
+  const bytes = new Uint8Array(8);
+  for (let i = 0; i < 8; i++) {
+    bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+  }
+  errEl.textContent = "";
+  decodeBytes(bytes);
+  return true;
+}
+
+function decodeBytes(bytes) {
+  const buf = new ArrayBuffer(8);
+  new Uint8Array(buf).set(bytes);
+  const view = new DataView(buf);
+  const busV = view.getFloat32(0, true);
+  const shuntMa = view.getFloat32(4, true);
+  const powerMw = busV * shuntMa;
+
+  const fmtNum = (n) => {
+    if (!Number.isFinite(n)) return n.toString();
+    let s = n.toFixed(6);
+    s = s.replace(/\.?0+$/, "");
+    if (s === "-0") s = "0";
+    return s;
+  };
+
+  document.getElementById("out-bus").textContent = fmtNum(busV) + " V";
+  document.getElementById("out-shunt").textContent = fmtNum(shuntMa) + " mA";
+  document.getElementById("out-power").textContent = fmtNum(powerMw) + " mW";
+  renderBytes(bytes);
+}
+
+function parseInput() {
+  const raw = document.getElementById("input").value.trim();
+  const fmt = document.getElementById("fmt").value;
+  const errEl = document.getElementById("error");
+
+  if (!raw) {
+    errEl.textContent = "";
+    clearOut();
+    renderBytes(new Uint8Array(8));
+    return;
+  }
+
+  try {
+    if (fmt === "hex-bytes") {
+      decodeHexBytes(raw);
+    } else if (fmt === "u64-dec") {
+      const n = BigInt(raw);
+      if (n < 0n || n > 0xFFFFFFFFFFFFFFFFn) {
+        errEl.textContent = "Value out of u64 range";
+        clearOut();
+        renderBytes(new Uint8Array(8));
+        return;
+      }
+      const buf = new ArrayBuffer(8);
+      new DataView(buf).setBigUint64(0, n, true);
+      errEl.textContent = "";
+      decodeBytes(new Uint8Array(buf));
+    } else if (fmt === "u64-hex") {
+      const hex = raw.replace(/^0x/i, "");
+      if (hex.length > 16) {
+        errEl.textContent = "Hex value exceeds 64 bits";
+        clearOut();
+        renderBytes(new Uint8Array(8));
+        return;
+      }
+      const n = BigInt("0x" + hex);
+      const buf = new ArrayBuffer(8);
+      new DataView(buf).setBigUint64(0, n, true);
+      errEl.textContent = "";
+      decodeBytes(new Uint8Array(buf));
+    }
+  } catch (e) {
+    errEl.textContent = "Invalid input";
+    clearOut();
+    renderBytes(new Uint8Array(8));
+  }
+}
+
+function clearOut() {
+  document.getElementById("out-bus").textContent = "-";
+  document.getElementById("out-shunt").textContent = "-";
+  document.getElementById("out-power").textContent = "-";
+}
+
+function renderBytes(bytes) {
+  const container = document.getElementById("bytes-container");
+  container.innerHTML = "";
+  for (let i = 0; i < 8; i++) {
+    const cls = i < 4 ? "byte-bus" : "byte-shunt";
+    const wrap = document.createElement("div");
+    wrap.className = "byte";
+    wrap.innerHTML = `<div class="byte-index">${i}</div><div class="byte-cell ${cls}">${bytes[i].toString(16).padStart(2, "0")}</div>`;
+    container.appendChild(wrap);
+  }
+}
+
+function copyText(el) {
+  const text = el.textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    const hint = document.getElementById("copy-hint");
+    hint.classList.add("show");
+    setTimeout(() => hint.classList.remove("show"), 1200);
+  });
+}
+
+function toggleLog() {
+  logVisible = !logVisible;
+  const log = document.getElementById("event-log");
+  const btn = document.getElementById("log-toggle");
+  if (logVisible) {
+    log.classList.remove("hidden");
+    btn.textContent = "Hide Log";
+  } else {
+    log.classList.add("hidden");
+    btn.textContent = "Show Log";
+  }
+}
+
+function updateUiForFormat() {
+  const fmt = document.getElementById("fmt").value;
+  const isSse = fmt === "sse-url";
+  const btn = document.getElementById("sse-btn");
+  const controls = document.getElementById("sse-controls");
+  const input = document.getElementById("input");
+  const log = document.getElementById("event-log");
+
+  if (isSse) {
+    btn.style.display = "block";
+    controls.style.display = "flex";
+    if (logVisible) log.classList.remove("hidden");
+    else log.classList.add("hidden");
+    input.placeholder = "https://example.com/events";
+  } else {
+    btn.style.display = "none";
+    controls.style.display = "none";
+    log.classList.add("hidden");
+    disconnectSse();
+    input.placeholder = fmt === "hex-bytes" ? "e.g. 0x0000000000000000" : "e.g. 12345 or 0x1a2b";
+  }
+}
+
+function applyDefaults() {
+  const sel = document.getElementById("fmt");
+  const input = document.getElementById("input");
+
+  if (CONFIG.defaultMode) {
+    sel.value = CONFIG.defaultMode;
+  }
+
+  if (CONFIG.defaultMode === "sse-url" && CONFIG.defaultSseUrl) {
+    input.value = CONFIG.defaultSseUrl;
+  }
+
+  updateUiForFormat();
+
+  if (CONFIG.defaultMode === "sse-url" && CONFIG.autoConnect && CONFIG.defaultSseUrl) {
+    connectSse(CONFIG.defaultSseUrl);
+  } else if (CONFIG.defaultMode !== "sse-url") {
+    parseInput();
+  }
+}
+
+document.getElementById("input").addEventListener("input", () => {
+  if (document.getElementById("fmt").value !== "sse-url") parseInput();
+});
+document.getElementById("fmt").addEventListener("change", () => {
+  updateUiForFormat();
+  if (document.getElementById("fmt").value !== "sse-url") parseInput();
+});
+document.getElementById("sse-btn").addEventListener("click", () => {
+  if (es) {
+    disconnectSse();
+  } else {
+    const url = document.getElementById("input").value.trim();
+    if (!url) return;
+    connectSse(url);
+  }
+});
+document.getElementById("log-toggle").addEventListener("click", toggleLog);
+
+applyDefaults();
+</script>
+</body>
+</html>
