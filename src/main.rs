@@ -175,7 +175,7 @@ async fn main(spawner: Spawner) {
                         .fold((0.0, 0.0), |a, e| (a.0 + e.bus_v, a.1 + e.shunt_ma));
                     let reading_avg = Ina219Reading {
                         bus_v: v / avg.len() as f32,
-                        shunt_ma: i / v / avg.len() as f32,
+                        shunt_ma: i / avg.len() as f32,
                     };
                     POWER_AVG.store(
                         u64::from_le_bytes(reading_avg.to_bytes()),
