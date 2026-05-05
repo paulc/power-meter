@@ -1,6 +1,7 @@
 use defmt::{error, info, warn};
 use embassy_executor::Spawner;
 use embassy_futures::select::select;
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Sender};
 use embassy_time::{Duration, Timer};
 use esp_hal::rng::Rng;
 use esp_radio::ble::controller::BleConnector;
@@ -36,7 +37,11 @@ const L2CAP_CHANNELS_MAX: usize = 2; // Signal + att
 const ADV_SETS_MAX: usize = 1;
 
 #[embassy_executor::task]
-pub async fn ble_task(spawner: Spawner, bluetooth: esp_hal::peripherals::BT<'static>) {
+pub async fn ble_task(
+    spawner: Spawner,
+    bluetooth: esp_hal::peripherals::BT<'static>,
+    config_tx: &'static Sender<'static, NoopRawMutex, u16, 1>,
+) {
     // Initialise BT
     let connector = BleConnector::new(bluetooth, Default::default()).unwrap();
     let controller: ExternalController<_, 1> = ExternalController::new(connector);
@@ -83,7 +88,7 @@ pub async fn ble_task(spawner: Spawner, bluetooth: esp_hal::peripherals::BT<'sta
             Ok(conn) => {
                 info!("Connection");
                 // Create GATT & Notify tasks
-                let gatt_task = gatt_events_task(&server, &conn);
+                let gatt_task = gatt_events_task(&server, &conn, config_tx);
                 let notify_task = notify_task(&server, &conn, stack);
                 // Wait for task to exit
                 select(gatt_task, notify_task).await;
@@ -107,6 +112,7 @@ async fn ble_runner_task(
 async fn gatt_events_task<P: PacketPool>(
     server: &PowerMeterServer<'_>,
     conn: &GattConnection<'_, '_, P>,
+    config_tx: &'static Sender<'static, NoopRawMutex, u16, 1>,
 ) -> Result<(), Error> {
     let reason = loop {
         match conn.next().await {
@@ -144,7 +150,24 @@ async fn gatt_events_task<P: PacketPool>(
                         }
                     }
                     GattEvent::Write(event) => {
-                        info!("[gatt] Write Event: {} {:?}", event.handle(), event.data());
+                        if event.handle() == server.power_meter_service.config.handle() {
+                            let data = event.data();
+                            if data.len() != 2 {
+                                error!("[gatt] Invalid write: server.power_meter_service.config");
+                            } else {
+                                info!("[gatt] Write power_meter_service.config -> {:x}", data);
+                                let mut bytes = [0_u8; 2];
+                                bytes.copy_from_slice(data);
+                                let config = u16::from_le_bytes(bytes);
+                                config_tx.send(config).await;
+                            }
+                        } else {
+                            info!(
+                                "[gatt] Unhandled Write Event: {} {:?}",
+                                event.handle(),
+                                event.data()
+                            );
+                        }
                     }
                     _ => {}
                 };

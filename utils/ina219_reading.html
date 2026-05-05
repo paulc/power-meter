@@ -137,6 +137,8 @@
     font-size: 1rem;
     cursor: pointer;
     user-select: all;
+    min-width: 10ch;
+    text-align: right;
   }
   .result-value:hover { opacity: 0.85; }
   .val-bus { color: var(--bus); }
@@ -442,15 +444,15 @@ function decodeBytes(bytes) {
   const shuntMa = view.getFloat32(4, true);
   const powerMw = busV * shuntMa;
 
+  // Always 3 decimal digits, right-aligned with units
   const fmtNum = (n) => {
     if (!Number.isFinite(n)) return n.toString();
-    let s = n.toFixed(6);
-    s = s.replace(/\.?0+$/, "");
-    if (s === "-0") s = "0";
+    let s = n.toFixed(3);
+    if (s === "-0.000") s = "0.000";
     return s;
   };
 
-  document.getElementById("out-bus").textContent = fmtNum(busV) + " V";
+  document.getElementById("out-bus").textContent = fmtNum(busV) + " V\u00A0";
   document.getElementById("out-shunt").textContent = fmtNum(shuntMa) + " mA";
   document.getElementById("out-power").textContent = fmtNum(powerMw) + " mW";
   renderBytes(bytes);

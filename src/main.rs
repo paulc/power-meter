@@ -15,8 +15,12 @@ use core::fmt::Write;
 use defmt_rtt as _;
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
-use embassy_futures::select::{select, Either};
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
+use embassy_futures::select::{select3, Either3};
+use embassy_sync::{
+    blocking_mutex::raw::NoopRawMutex,
+    channel::{Channel, Sender},
+    mutex::Mutex,
+};
 use embassy_time::{Duration, Ticker, Timer};
 use embedded_graphics::{
     pixelcolor::Rgb565,
@@ -44,14 +48,13 @@ static ENCODER: AtomicI32 = AtomicI32::new(0);
 #[embassy_executor::task]
 async fn memory_task() {
     loop {
-        // If using esp-alloc with the global allocator:
         let (used, free) = {
             let used = esp_alloc::HEAP.used();
             let free = esp_alloc::HEAP.free();
             (used, free)
         };
         defmt::info!("Heap: used={} free={} total={}", used, free, used + free);
-        Timer::after(Duration::from_secs(5)).await;
+        Timer::after(Duration::from_secs(10)).await;
     }
 }
 
@@ -150,16 +153,23 @@ async fn main(spawner: Spawner) {
         peripherals.GPIO20.degrade(),
     );
 
+    // Create channel for BLE config write
+    static CONFIG_CHANNEL: StaticCell<Channel<NoopRawMutex, u16, 1>> = StaticCell::new();
+    static CONFIG_TX: StaticCell<Sender<NoopRawMutex, u16, 1>> = StaticCell::new();
+    let config_channel = CONFIG_CHANNEL.init(Channel::new());
+    let config_rx = config_channel.receiver();
+    let config_tx = CONFIG_TX.init(config_channel.sender());
+
     // BLE Task
-    spawner.spawn(ble_task(spawner, peripherals.BT).expect("spawn: ble_task"));
+    spawner.spawn(ble_task(spawner, peripherals.BT, config_tx).expect("spawn: ble_task"));
 
     let mut ticker = Ticker::every(Duration::from_millis(100));
     let mut reading = Ina219Reading::default();
     let mut avg = heapless::Deque::<Ina219Reading, 10>::new();
 
     loop {
-        match select(ticker.next(), encoder_rx.receive()).await {
-            Either::First(_) => {
+        match select3(ticker.next(), encoder_rx.receive(), config_rx.receive()).await {
+            Either3::First(_) => {
                 // Update reading/display
                 reading = update(
                     &mut lcd_tx,
@@ -190,8 +200,9 @@ async fn main(spawner: Spawner) {
                 }
                 avg.push_back(reading.clone()).unwrap(); // SAFE
             }
-            Either::Second(msg) => match msg {
-                // Handle encoder input
+            // Encoder input
+            Either3::Second(msg) => match msg {
+                // Get encoder input
                 // - turn to increment/decrement selection
                 // - press to cycle setting
                 EncoderMsg::Button => {
@@ -239,6 +250,14 @@ async fn main(spawner: Spawner) {
                     ENCODER.fetch_add(-1, Ordering::Relaxed);
                 }
             },
+            // config_rx
+            Either3::Third(config) => {
+                defmt::info!("Update INA219 Config: {}", config);
+                let config = Ina219Config(config);
+                ina219_device.write_config(config).await.unwrap();
+                // Write to static
+                INA219_CONFIG.store(ina219_device.config.0, Ordering::Relaxed);
+            }
         }
     }
 }
