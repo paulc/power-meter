@@ -60,17 +60,16 @@ pub async fn init_lcd(
     // Create DMA buffers for SPI
     #[allow(clippy::manual_div_ceil)]
     let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) = esp_hal::dma_buffers!(64, 8000);
-    let dma_rx_buf = DmaRxBuf::new(rx_descriptors, rx_buffer).unwrap();
-    let dma_tx_buf = DmaTxBuf::new(tx_descriptors, tx_buffer).unwrap();
+    let dma_rx_buf = defmt::unwrap!(DmaRxBuf::new(rx_descriptors, rx_buffer));
+    let dma_tx_buf = defmt::unwrap!(DmaTxBuf::new(tx_descriptors, tx_buffer));
 
     // Create SPI with DMA
-    let spi = Spi::new(
+    let spi = defmt::unwrap!(Spi::new(
         spi_dev,
         Config::default()
             .with_frequency(Rate::from_mhz(80))
             .with_mode(Mode::_0),
-    )
-    .unwrap()
+    ))
     .with_sck(sclk)
     .with_mosi(mosi)
     .with_dma(dma_ch)
@@ -152,68 +151,74 @@ async fn lcd_task(
     let frame_buffer = FRAME_BUFFER.init_with(|| [0; FRAME_SIZE]);
     let mut lines = heapless::Deque::<heapless::String<40>, DISPLAY_LINES>::new();
     loop {
-        let mut raw_fb = RawFrameBuf::<Rgb565, _>::new(
-            frame_buffer.as_mut_slice(),
-            DISPLAY_WIDTH.into(),
-            DISPLAY_HEIGHT.into(),
-        );
-        let (msg, update) = lcd_rx.receive().await;
-        match msg {
-            LcdMessage::Draw => {} // Empty command to allow update
-            LcdMessage::TestImage => {
-                TestImage::new().draw(&mut raw_fb).unwrap();
-            }
-            LcdMessage::Background(c) => {
-                raw_fb.clear(c).ok();
-            }
-            LcdMessage::Text(t, p, s, c) => {
-                let style = match s {
-                    7 => MonoTextStyle::new(&profont::PROFONT_7_POINT, c),
-                    9 => MonoTextStyle::new(&profont::PROFONT_9_POINT, c),
-                    12 => MonoTextStyle::new(&profont::PROFONT_12_POINT, c),
-                    14 => MonoTextStyle::new(&profont::PROFONT_14_POINT, c),
-                    18 => MonoTextStyle::new(&profont::PROFONT_18_POINT, c),
-                    24 => MonoTextStyle::new(&profont::PROFONT_24_POINT, c),
-                    _ => MonoTextStyle::new(&profont::PROFONT_14_POINT, c), // Default
-                };
-                Text::new(t.as_str(), p, style).draw(&mut raw_fb).unwrap();
-            }
-            LcdMessage::Static(t, p, s, c) => {
-                let style = match s {
-                    7 => MonoTextStyle::new(&profont::PROFONT_7_POINT, c),
-                    9 => MonoTextStyle::new(&profont::PROFONT_9_POINT, c),
-                    12 => MonoTextStyle::new(&profont::PROFONT_12_POINT, c),
-                    14 => MonoTextStyle::new(&profont::PROFONT_14_POINT, c),
-                    18 => MonoTextStyle::new(&profont::PROFONT_18_POINT, c),
-                    24 => MonoTextStyle::new(&profont::PROFONT_24_POINT, c),
-                    _ => MonoTextStyle::new(&profont::PROFONT_14_POINT, c), // Default
-                };
-                Text::new(t, p, style).draw(&mut raw_fb).unwrap();
-            }
-            LcdMessage::Scroll(t) => {
-                raw_fb.clear(Rgb565::BLUE).ok();
-                let style = MonoTextStyle::new(&profont::PROFONT_14_POINT, Rgb565::WHITE);
-                if lines.is_full() {
-                    lines.pop_front().expect("pop_back");
-                }
-                lines.push_back(t).expect("push_front");
+        defmt::unwrap!(
+            async {
+                let mut raw_fb = RawFrameBuf::<Rgb565, _>::new(
+                    frame_buffer.as_mut_slice(),
+                    DISPLAY_WIDTH.into(),
+                    DISPLAY_HEIGHT.into(),
+                );
+                let (msg, update) = lcd_rx.receive().await;
+                match msg {
+                    LcdMessage::Draw => {} // Empty command to allow update
+                    LcdMessage::TestImage => {
+                        TestImage::new().draw(&mut raw_fb).unwrap();
+                    }
+                    LcdMessage::Background(c) => {
+                        raw_fb.clear(c).ok();
+                    }
+                    LcdMessage::Text(t, p, s, c) => {
+                        let style = match s {
+                            7 => MonoTextStyle::new(&profont::PROFONT_7_POINT, c),
+                            9 => MonoTextStyle::new(&profont::PROFONT_9_POINT, c),
+                            12 => MonoTextStyle::new(&profont::PROFONT_12_POINT, c),
+                            14 => MonoTextStyle::new(&profont::PROFONT_14_POINT, c),
+                            18 => MonoTextStyle::new(&profont::PROFONT_18_POINT, c),
+                            24 => MonoTextStyle::new(&profont::PROFONT_24_POINT, c),
+                            _ => MonoTextStyle::new(&profont::PROFONT_14_POINT, c), // Default
+                        };
+                        Text::new(t.as_str(), p, style).draw(&mut raw_fb).unwrap();
+                    }
+                    LcdMessage::Static(t, p, s, c) => {
+                        let style = match s {
+                            7 => MonoTextStyle::new(&profont::PROFONT_7_POINT, c),
+                            9 => MonoTextStyle::new(&profont::PROFONT_9_POINT, c),
+                            12 => MonoTextStyle::new(&profont::PROFONT_12_POINT, c),
+                            14 => MonoTextStyle::new(&profont::PROFONT_14_POINT, c),
+                            18 => MonoTextStyle::new(&profont::PROFONT_18_POINT, c),
+                            24 => MonoTextStyle::new(&profont::PROFONT_24_POINT, c),
+                            _ => MonoTextStyle::new(&profont::PROFONT_14_POINT, c), // Default
+                        };
+                        Text::new(t, p, style).draw(&mut raw_fb).unwrap();
+                    }
+                    LcdMessage::Scroll(t) => {
+                        raw_fb.clear(Rgb565::BLUE).ok();
+                        let style = MonoTextStyle::new(&profont::PROFONT_14_POINT, Rgb565::WHITE);
+                        if lines.is_full() {
+                            lines.pop_front().expect("pop_back");
+                        }
+                        lines.push_back(t).expect("push_front");
 
-                for (i, l) in lines.iter().enumerate() {
-                    Text::new(
-                        l.as_str(),
-                        Point::new(10, (FONT_HEIGHT * (i + 1) as u16) as i32),
-                        style,
-                    )
-                    .draw(&mut raw_fb)
-                    .expect("text");
+                        for (i, l) in lines.iter().enumerate() {
+                            Text::new(
+                                l.as_str(),
+                                Point::new(10, (FONT_HEIGHT * (i + 1) as u16) as i32),
+                                style,
+                            )
+                            .draw(&mut raw_fb)
+                            .expect("text");
+                        }
+                    }
                 }
+                if update {
+                    display
+                        .show_raw_data(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, frame_buffer)
+                        .await
+                        .map_err(|_| ())?
+                }
+                Ok::<(), ()>(())
             }
-        }
-        if update {
-            display
-                .show_raw_data(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT, frame_buffer)
-                .await
-                .unwrap();
-        }
+            .await
+        );
     }
 }

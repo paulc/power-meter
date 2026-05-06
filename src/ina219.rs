@@ -29,6 +29,16 @@ pub enum Ina219Error {
     NotReady,
 }
 
+impl defmt::Format for Ina219Error {
+    fn format(&self, f: defmt::Formatter) {
+        match self {
+            Ina219Error::I2cError => defmt::write!(f, "I2C error"),
+            Ina219Error::Overflow => defmt::write!(f, "Overflow"),
+            Ina219Error::NotReady => defmt::write!(f, "Not ready"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Ina219Brng {
     Brng16V = 0b0,

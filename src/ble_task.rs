@@ -43,7 +43,7 @@ pub async fn ble_task(
     config_tx: &'static Sender<'static, NoopRawMutex, u16, 1>,
 ) {
     // Initialise BT
-    let connector = BleConnector::new(bluetooth, Default::default()).unwrap();
+    let connector = defmt::unwrap!(BleConnector::new(bluetooth, Default::default()));
     let controller: ExternalController<_, 1> = ExternalController::new(connector);
 
     // Use a random address to avoid caching
@@ -74,14 +74,15 @@ pub async fn ble_task(
     let mut peripheral = stack.peripheral();
 
     info!("Starting Advertising and GATT service");
-    let server = PowerMeterServer::new_with_config(GapConfig::Peripheral(PeripheralConfig {
-        name: DEVICE_NAME,
-        appearance: &appearance::sensor::GENERIC_SENSOR,
-    }))
-    .unwrap();
+    let server = defmt::unwrap!(PowerMeterServer::new_with_config(GapConfig::Peripheral(
+        PeripheralConfig {
+            name: DEVICE_NAME,
+            appearance: &appearance::sensor::GENERIC_SENSOR,
+        }
+    )));
 
     // Spawn BLE task
-    spawner.spawn(ble_runner_task(runner).expect("Spawn ble_runner_task"));
+    spawner.spawn(defmt::unwrap!(ble_runner_task(runner)));
 
     loop {
         match advertise(DEVICE_NAME, &mut peripheral, &server).await {

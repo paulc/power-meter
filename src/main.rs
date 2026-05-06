@@ -6,7 +6,14 @@
     holding buffers for the duration of a data transfer."
 )]
 
-use esp_hal::{clock::CpuClock, gpio::Pin, i2c, time::Rate, timer::timg::TimerGroup, Async};
+use esp_hal::{
+    clock::CpuClock,
+    gpio::Pin,
+    i2c,
+    time::Rate,
+    timer::timg::{MwdtStage, TimerGroup},
+    Async,
+};
 
 #[cfg(target_arch = "riscv32")]
 use esp_hal::interrupt::software::SoftwareInterruptControl;
@@ -46,15 +53,27 @@ static I2C_BUS: StaticCell<Mutex<NoopRawMutex, i2c::master::I2c<Async>>> = Stati
 static ENCODER: AtomicI32 = AtomicI32::new(0);
 
 #[embassy_executor::task]
-async fn memory_task() {
+async fn wdt_task(
+    wdt: &'static mut esp_hal::timer::timg::Wdt<esp_hal::peripherals::TIMG0<'static>>,
+) {
+    wdt.set_timeout(
+        MwdtStage::Stage0,
+        esp_hal::time::Duration::from_millis(5_000),
+    );
+    wdt.enable();
+    let mut counter = 0_u32;
     loop {
-        let (used, free) = {
-            let used = esp_alloc::HEAP.used();
-            let free = esp_alloc::HEAP.free();
-            (used, free)
-        };
-        defmt::info!("Heap: used={} free={} total={}", used, free, used + free);
-        Timer::after(Duration::from_secs(10)).await;
+        wdt.feed();
+        if counter.is_multiple_of(10) {
+            let (used, free) = {
+                let used = esp_alloc::HEAP.used();
+                let free = esp_alloc::HEAP.free();
+                (used, free)
+            };
+            defmt::info!("Heap: used={} free={} total={}", used, free, used + free);
+        }
+        Timer::after(Duration::from_secs(1)).await;
+        counter += 1;
     }
 }
 
@@ -75,7 +94,12 @@ async fn main(spawner: Spawner) {
         sw_int.software_interrupt0,
     );
 
-    spawner.spawn(memory_task().expect("memory_task"));
+    // Watchdog
+    static WDT: StaticCell<esp_hal::timer::timg::Wdt<esp_hal::peripherals::TIMG0>> =
+        StaticCell::new();
+    let wdt = WDT.init(timg0.wdt);
+
+    spawner.spawn(wdt_task(wdt).expect("wdt_task"));
 
     // Init LCD (pass peripherals)
     let mut lcd_tx = init_lcd(
@@ -90,7 +114,7 @@ async fn main(spawner: Spawner) {
         spawner,
     )
     .await
-    .unwrap();
+    .expect("init_lcd");
 
     // Initialise I2C Bus
     let i2c_config = i2c::master::Config::default().with_frequency(Rate::from_khz(100));
@@ -114,35 +138,40 @@ async fn main(spawner: Spawner) {
     // Create shared I2C bus
     let i2c_bus = I2C_BUS.init(Mutex::new(i2c));
 
-    let mut ina219_device = Ina219::new(
-        I2cDevice::new(i2c_bus),
-        INA219_ADDRESS,
-        INA219_SHUNT_RESISTOR,
-    );
+    let mut ina219_device = defmt::unwrap!(
+        async {
+            let mut ina219_device = Ina219::new(
+                I2cDevice::new(i2c_bus),
+                INA219_ADDRESS,
+                INA219_SHUNT_RESISTOR,
+            );
 
-    ina219_device.reset().await.unwrap();
+            ina219_device.reset().await?;
 
-    ina219_device
-        .write_config(
-            Ina219Config::default()
-                .with_brng(Ina219Brng::Brng32V)
-                .with_pga(Ina219Pga::Pga80mV)
-                .with_badc(Ina219Adc::Adc12_16)
-                .with_sadc(Ina219Adc::Adc12_16),
-        )
+            ina219_device
+                .write_config(
+                    Ina219Config::default()
+                        .with_brng(Ina219Brng::Brng32V)
+                        .with_pga(Ina219Pga::Pga80mV)
+                        .with_badc(Ina219Adc::Adc12_16)
+                        .with_sadc(Ina219Adc::Adc12_16),
+                )
+                .await?;
+
+            // Store config as U16 for BLE
+            INA219_CONFIG.store(ina219_device.config.0, Ordering::Relaxed);
+
+            let (brng, pga, badc, sadc) = ina219_device.config.as_str();
+            defmt::info!(
+                "INA219 Config: Brng: {} / PGA: {} / BADC: {} / SADC: {}",
+                brng,
+                pga,
+                badc,
+                sadc
+            );
+            Ok::<_, Ina219Error>(ina219_device)
+        }
         .await
-        .unwrap();
-
-    // Store config as U16 for BLE
-    INA219_CONFIG.store(ina219_device.config.0, Ordering::Relaxed);
-
-    let (brng, pga, badc, sadc) = ina219_device.config.as_str();
-    defmt::info!(
-        "INA219 Config: Brng: {} / PGA: {} / BADC: {} / SADC: {}",
-        brng,
-        pga,
-        badc,
-        sadc
     );
 
     // Rotary encoder
@@ -161,7 +190,7 @@ async fn main(spawner: Spawner) {
     let config_tx = CONFIG_TX.init(config_channel.sender());
 
     // BLE Task
-    spawner.spawn(ble_task(spawner, peripherals.BT, config_tx).expect("spawn: ble_task"));
+    spawner.spawn(defmt::unwrap!(ble_task(spawner, peripherals.BT, config_tx)));
 
     let mut ticker = Ticker::every(Duration::from_millis(100));
     let mut reading = Ina219Reading::default();
@@ -198,7 +227,7 @@ async fn main(spawner: Spawner) {
                     );
                     avg.clear();
                 }
-                avg.push_back(reading.clone()).unwrap(); // SAFE
+                defmt::unwrap!(avg.push_back(reading.clone()), "push_back"); // SAFE
             }
             // Encoder input
             Either3::Second(msg) => match msg {
@@ -209,37 +238,39 @@ async fn main(spawner: Spawner) {
                     // Get encoder_index: -1 not selected
                     let encoder_index = ENCODER.load(Ordering::Relaxed).rem_euclid(5) - 1;
                     let config = ina219_device.config.clone();
-                    match encoder_index {
-                        0 => {
-                            // BRNG
-                            ina219_device
-                                .write_config(config.with_brng(config.get_brng().cycle()))
-                                .await
-                                .unwrap();
+                    defmt::unwrap!(
+                        async {
+                            match encoder_index {
+                                0 => {
+                                    // BRNG
+                                    ina219_device
+                                        .write_config(config.with_brng(config.get_brng().cycle()))
+                                        .await?
+                                }
+                                1 => {
+                                    // PGA
+                                    ina219_device
+                                        .write_config(config.with_pga(config.get_pga().cycle()))
+                                        .await?
+                                }
+                                2 => {
+                                    // BADC
+                                    ina219_device
+                                        .write_config(config.with_badc(config.get_badc().cycle()))
+                                        .await?
+                                }
+                                3 => {
+                                    // SADC
+                                    ina219_device
+                                        .write_config(config.with_sadc(config.get_sadc().cycle()))
+                                        .await?
+                                }
+                                _ => {}
+                            }
+                            Ok::<(), Ina219Error>(())
                         }
-                        1 => {
-                            // PGA
-                            ina219_device
-                                .write_config(config.with_pga(config.get_pga().cycle()))
-                                .await
-                                .unwrap();
-                        }
-                        2 => {
-                            // BADC
-                            ina219_device
-                                .write_config(config.with_badc(config.get_badc().cycle()))
-                                .await
-                                .unwrap();
-                        }
-                        3 => {
-                            // SADC
-                            ina219_device
-                                .write_config(config.with_sadc(config.get_sadc().cycle()))
-                                .await
-                                .unwrap();
-                        }
-                        _ => {}
-                    }
+                        .await
+                    );
                     // Write to static
                     INA219_CONFIG.store(ina219_device.config.0, Ordering::Relaxed);
                 }
@@ -254,7 +285,7 @@ async fn main(spawner: Spawner) {
             Either3::Third(config) => {
                 defmt::info!("Update INA219 Config: {}", config);
                 let config = Ina219Config(config);
-                ina219_device.write_config(config).await.unwrap();
+                defmt::unwrap!(ina219_device.write_config(config).await);
                 // Write to static
                 INA219_CONFIG.store(ina219_device.config.0, Ordering::Relaxed);
             }
@@ -262,6 +293,7 @@ async fn main(spawner: Spawner) {
     }
 }
 
+/// Update INA219 reading and display
 async fn update(
     lcd_tx: &mut LcdSender,
     previous: Ina219Reading,
