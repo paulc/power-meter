@@ -5,15 +5,16 @@ use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Sender};
 use embassy_time::{Duration, Timer};
 use esp_hal::rng::Rng;
 use esp_radio::ble::controller::BleConnector;
-use portable_atomic::{AtomicU16, AtomicU64, Ordering};
+use portable_atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering};
 use static_cell::StaticCell;
 use trouble_host::prelude::*;
 
 pub static POWER_INSTANT: AtomicU64 = AtomicU64::new(0);
 pub static POWER_AVG: AtomicU64 = AtomicU64::new(0);
 pub static INA219_CONFIG: AtomicU16 = AtomicU16::new(0);
+pub static NOTIFY_INTERVAL: AtomicU32 = AtomicU32::new(5);
 
-const DEVICE_NAME: &str = "POWER_METER";
+const DEVICE_NAME: &str = "INA219_BT";
 
 // GATT Server
 #[gatt_server]
@@ -29,12 +30,15 @@ pub struct PowerMeterService {
     #[characteristic(uuid = "00000003-9b04-4347-98ff-57e8f7803509", read, notify)]
     pub power_average: [u8; 8],
     #[characteristic(uuid = "00000004-9b04-4347-98ff-57e8f7803509", read, write)]
-    pub config: u16,
+    pub ina219_config: u16,
+    #[characteristic(uuid = "00000005-9b04-4347-98ff-57e8f7803509", read, write)]
+    pub notify_interval: u32,
 }
 
 const CONNECTIONS_MAX: usize = 1;
 const L2CAP_CHANNELS_MAX: usize = 2; // Signal + att
 const ADV_SETS_MAX: usize = 1;
+const HEX_CHARS: [u8; 16] = *b"0123456789abcdef";
 
 #[embassy_executor::task]
 pub async fn ble_task(
@@ -47,11 +51,25 @@ pub async fn ble_task(
     let controller: ExternalController<_, 1> = ExternalController::new(connector);
 
     // Use a random address to avoid caching
-    let mut address = [0u8; 6];
-    Rng::new().read(&mut address);
-    info!("Address: {}", to_hex(&address));
+    let mut rnd = [0u8; 6];
+    Rng::new().read(&mut rnd);
+    info!("Address (Rnd): {}", to_hex(&rnd));
 
-    let address: Address = Address::random(address);
+    // Add address bytes to name
+    let mut device_name = heapless::String::<16>::new();
+    device_name.push_str(DEVICE_NAME).ok();
+    device_name.push_str("_").ok();
+    for b in &rnd[(rnd.len() - 2)..] {
+        device_name
+            .push(HEX_CHARS[(b >> 4) as usize] as char)
+            .and_then(|_| device_name.push(HEX_CHARS[(b & 0x0F) as usize] as char))
+            .ok();
+    }
+
+    info!("Device Name: {}", device_name);
+
+    // Generate BLE address
+    let address: Address = Address::random(rnd);
 
     static RESOURCES: StaticCell<
         HostResources<
@@ -76,7 +94,7 @@ pub async fn ble_task(
     info!("Starting Advertising and GATT service");
     let server = defmt::unwrap!(PowerMeterServer::new_with_config(GapConfig::Peripheral(
         PeripheralConfig {
-            name: DEVICE_NAME,
+            name: device_name.as_str(),
             appearance: &appearance::sensor::GENERIC_SENSOR,
         }
     )));
@@ -85,7 +103,7 @@ pub async fn ble_task(
     spawner.spawn(defmt::unwrap!(ble_runner_task(runner)));
 
     loop {
-        match advertise(DEVICE_NAME, &mut peripheral, &server).await {
+        match advertise(device_name.as_str(), &mut peripheral, &server).await {
             Ok(conn) => {
                 info!("Connection");
                 // Create GATT & Notify tasks
@@ -139,28 +157,67 @@ async fn gatt_events_task<P: PacketPool>(
                             {
                                 error!("[gatt] Update power_meter_service.power_average")
                             }
-                        } else if event.handle() == server.power_meter_service.config.handle() {
+                        } else if event.handle()
+                            == server.power_meter_service.ina219_config.handle()
+                        {
                             let config = INA219_CONFIG.load(Ordering::Relaxed);
-                            info!("[gatt] Read config -> 0x{:x}", config);
-                            if let Err(_e) = server.set(&server.power_meter_service.config, &config)
+                            info!("[gatt] Read ina219_config -> 0x{:x}", config);
+                            if let Err(_e) =
+                                server.set(&server.power_meter_service.ina219_config, &config)
                             {
-                                error!("[gatt] Update power_meter_service.config")
+                                error!("[gatt] Update power_meter_service.ina219_config")
+                            }
+                        } else if event.handle()
+                            == server.power_meter_service.notify_interval.handle()
+                        {
+                            let interval = NOTIFY_INTERVAL.load(Ordering::Relaxed);
+                            info!("[gatt] Read notify_interval -> {}", interval);
+                            if let Err(_e) =
+                                server.set(&server.power_meter_service.notify_interval, &interval)
+                            {
+                                error!("[gatt] Update power_meter_service.ina219_config")
                             }
                         } else {
-                            info!("[gatt] Read Event: {:?}", event.handle());
+                            info!("[gatt] Unknown Read Event: {:?}", event.handle());
                         }
                     }
                     GattEvent::Write(event) => {
-                        if event.handle() == server.power_meter_service.config.handle() {
+                        if event.handle() == server.power_meter_service.ina219_config.handle() {
                             let data = event.data();
                             if data.len() != 2 {
-                                error!("[gatt] Invalid write: server.power_meter_service.config");
+                                error!("[gatt] Invalid write: server.power_meter_service.ina219_config");
                             } else {
-                                info!("[gatt] Write power_meter_service.config -> {:x}", data);
+                                info!(
+                                    "[gatt] Write power_meter_service.ina219_config -> {:x}",
+                                    data
+                                );
                                 let mut bytes = [0_u8; 2];
                                 bytes.copy_from_slice(data);
                                 let config = u16::from_le_bytes(bytes);
                                 config_tx.send(config).await;
+                            }
+                        } else if event.handle()
+                            == server.power_meter_service.notify_interval.handle()
+                        {
+                            let data = event.data();
+                            if data.len() != 4 {
+                                error!("[gatt] Invalid write: server.power_meter_service.notify_interval");
+                            } else {
+                                let mut bytes = [0_u8; 4];
+                                bytes.copy_from_slice(data);
+                                let interval = u32::from_le_bytes(bytes);
+                                if interval >= 1 {
+                                    info!(
+                                        "[gatt] Write power_meter_service.notify_interval-> {}",
+                                        interval
+                                    );
+                                    NOTIFY_INTERVAL.store(interval, Ordering::Relaxed);
+                                } else {
+                                    error!(
+                                        "[gatt] Invalid power_meter_service.notify_interval-> {}",
+                                        interval
+                                    );
+                                }
                             }
                         } else {
                             info!(
@@ -204,7 +261,10 @@ async fn notify_task<C: Controller, P: PacketPool>(
                 to_hex(&p_avg)
             );
         }
-        Timer::after(Duration::from_secs(5)).await;
+        Timer::after(Duration::from_secs(
+            NOTIFY_INTERVAL.load(Ordering::Relaxed) as u64
+        ))
+        .await;
     }
 }
 
@@ -237,8 +297,6 @@ async fn advertise<'values, 'server, C: Controller>(
     info!("[adv] connection established");
     Ok(conn)
 }
-
-const HEX_CHARS: [u8; 16] = *b"0123456789abcdef";
 
 pub fn to_hex<const N: usize>(bytes: &[u8; N]) -> heapless::String<64> {
     let mut s = heapless::String::new();
