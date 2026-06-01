@@ -39,7 +39,7 @@ use portable_atomic::{AtomicI32, Ordering};
 use static_cell::StaticCell;
 
 use power_monitor::ble_task::{ble_task, INA219_CONFIG, POWER_AVG, POWER_INSTANT};
-use power_monitor::c6_lcd::{init_lcd, LcdMessage, LcdSender};
+use power_monitor::c6_lcd::{init_lcd, LcdMessage, LcdPins, LcdSender};
 use power_monitor::encoder::{self, EncoderMsg};
 use power_monitor::ina219::*;
 
@@ -101,14 +101,31 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(wdt_task(wdt).expect("wdt_task"));
 
-    // Init LCD (pass peripherals)
+    // External LCD
+    #[cfg(not(feature = "lcd_builtin"))]
+    let pins = LcdPins {
+        dc: peripherals.GPIO9.degrade(),   // DC (Data/Command)
+        cs: peripherals.GPIO14.degrade(),  // CS (Chip Select)
+        sclk: peripherals.GPIO6.degrade(), // CLK
+        mosi: peripherals.GPIO7.degrade(), // DIN
+        res: peripherals.GPIO8.degrade(),  // RES (Reset)
+        bl: peripherals.GPIO15.degrade(),  // Backlight
+    };
+
+    // Internal LCD
+    #[cfg(feature = "lcd_builtin")]
+    let pins = LcdPins {
+        dc: peripherals.GPIO15.degrade(),  // DC (Data/Command)
+        cs: peripherals.GPIO14.degrade(),  // CS (Chip Select)
+        sclk: peripherals.GPIO7.degrade(), // CLK
+        mosi: peripherals.GPIO6.degrade(), // DIN
+        res: peripherals.GPIO21.degrade(), // RES (Reset)
+        bl: peripherals.GPIO22.degrade(),  // Backlight
+    };
+
+    // Init LCD
     let mut lcd_tx = init_lcd(
-        peripherals.GPIO15,  // DC (Data/Command)
-        peripherals.GPIO14,  // CS (Chip Select)
-        peripherals.GPIO7,   // CLK
-        peripherals.GPIO6,   // DIN
-        peripherals.GPIO21,  // RES (Reset)
-        peripherals.GPIO22,  // Backlight
+        pins,
         peripherals.SPI2,    // SPI Device
         peripherals.DMA_CH0, // DMA device
         spawner,
@@ -118,8 +135,8 @@ async fn main(spawner: Spawner) {
 
     // Initialise I2C Bus
     let i2c_config = i2c::master::Config::default().with_frequency(Rate::from_khz(100));
-    let scl = peripherals.GPIO4;
-    let sda = peripherals.GPIO5;
+    let scl = peripherals.GPIO3;
+    let sda = peripherals.GPIO4;
     let mut i2c = i2c::master::I2c::new(peripherals.I2C0, i2c_config)
         .expect("Error initailising I2C")
         .with_scl(scl)
@@ -174,13 +191,14 @@ async fn main(spawner: Spawner) {
         .await
     );
 
-    // Rotary encoder
-    let encoder_rx = encoder::init(
-        spawner,
-        peripherals.GPIO18.degrade(),
-        peripherals.GPIO19.degrade(),
+    let (clk, dt, sw) = (
         peripherals.GPIO20.degrade(),
+        peripherals.GPIO19.degrade(),
+        peripherals.GPIO18.degrade(),
     );
+
+    // Rotary encoder
+    let encoder_rx = encoder::init(spawner, clk, dt, sw);
 
     // Create channel for BLE config write
     static CONFIG_CHANNEL: StaticCell<Channel<NoopRawMutex, u16, 1>> = StaticCell::new();

@@ -1,6 +1,6 @@
 use esp_hal::{
     dma::{DmaRxBuf, DmaTxBuf},
-    gpio::{Level, Output},
+    gpio::{AnyPin, Level, Output},
     spi::{
         master::{Config, Spi, SpiDmaBus},
         Mode,
@@ -20,7 +20,7 @@ use lcd_async::{
     models::ST7789,
     options::{ColorInversion, ColorOrder, Orientation, Rotation},
     raw_framebuf::RawFrameBuf,
-    Builder, TestImage,
+    Builder, NoResetPin, TestImage,
 };
 
 use static_cell::StaticCell;
@@ -43,20 +43,34 @@ pub enum LcdError {
 
 pub type LcdSender = Sender<'static, NoopRawMutex, (LcdMessage, bool), 1>;
 
+pub struct LcdPins {
+    pub dc: AnyPin<'static>,   // DC (Data/Command)
+    pub cs: AnyPin<'static>,   // CS (Chip Select)
+    pub sclk: AnyPin<'static>, // CLK
+    pub mosi: AnyPin<'static>, // DIN
+    pub res: AnyPin<'static>,  // RES (Reset)
+    pub bl: AnyPin<'static>,   // Backlight
+}
+
 // Init C6 display
 // (Note - peripherals are fixed to make ownership easier)
 #[allow(clippy::too_many_arguments)]
 pub async fn init_lcd(
-    dc: esp_hal::peripherals::GPIO15<'static>, // DC (Data/Command)
-    cs: esp_hal::peripherals::GPIO14<'static>, // CS (Chip Select)
-    sclk: esp_hal::peripherals::GPIO7<'static>, // CLK
-    mosi: esp_hal::peripherals::GPIO6<'static>, // DIN
-    res: esp_hal::peripherals::GPIO21<'static>, // RES (Reset)
-    bl: esp_hal::peripherals::GPIO22<'static>, // Backlight
+    pins: LcdPins,
     spi_dev: esp_hal::peripherals::SPI2<'static>, // SPI Device
     dma_ch: esp_hal::peripherals::DMA_CH0<'static>, // DMA device
     spawner: embassy_executor::Spawner,
 ) -> Result<LcdSender, LcdError> {
+    // Destructure pins
+    let LcdPins {
+        dc,
+        cs,
+        sclk,
+        mosi,
+        res,
+        bl,
+    } = pins;
+
     // Create DMA buffers for SPI
     #[allow(clippy::manual_div_ceil)]
     let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) = esp_hal::dma_buffers!(64, 8000);

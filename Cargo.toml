@@ -18,6 +18,9 @@ harness = false
 # (override using cargo build/run --no-default-features --features ...)
 default = ["esp32c6"]
 
+# Use build-in display on ECP32-C6 LCD module
+lcd_builtin = [] 
+
 esp32s3 = [
     "esp-hal/esp32s3",
     "esp-bootloader-esp-idf/esp32s3",
