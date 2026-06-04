@@ -1,10 +1,11 @@
 use defmt::{error, info, warn};
 use embassy_executor::Spawner;
 use embassy_futures::select::select;
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Sender};
+use embassy_sync::channel::Sender;
 use embassy_time::{Duration, Timer};
 use esp_hal::rng::Rng;
 use esp_radio::ble::controller::BleConnector;
+use esp_sync::RawMutex;
 use portable_atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering};
 use static_cell::StaticCell;
 use trouble_host::prelude::*;
@@ -14,7 +15,7 @@ pub static POWER_AVG: AtomicU64 = AtomicU64::new(0);
 pub static INA219_CONFIG: AtomicU16 = AtomicU16::new(0);
 pub static NOTIFY_INTERVAL: AtomicU32 = AtomicU32::new(5);
 
-const DEVICE_NAME: &str = "INA219_BT";
+const DEVICE: &str = "INA219_BT";
 
 // GATT Server
 #[gatt_server]
@@ -37,18 +38,17 @@ pub struct PowerMeterService {
 
 const CONNECTIONS_MAX: usize = 1;
 const L2CAP_CHANNELS_MAX: usize = 2; // Signal + att
-const ADV_SETS_MAX: usize = 1;
 const HEX_CHARS: [u8; 16] = *b"0123456789abcdef";
 
 #[embassy_executor::task]
 pub async fn ble_task(
     spawner: Spawner,
     bluetooth: esp_hal::peripherals::BT<'static>,
-    config_tx: &'static Sender<'static, NoopRawMutex, u16, 1>,
+    config_tx: &'static Sender<'static, RawMutex, u16, 1>,
 ) {
     // Initialise BT
-    let connector = defmt::unwrap!(BleConnector::new(bluetooth, Default::default()));
-    let controller: ExternalController<_, 1> = ExternalController::new(connector);
+    let transport = BleConnector::new(bluetooth, Default::default()).unwrap();
+    let ble_controller = ExternalController::<_, 1>::new(transport);
 
     // Use a random address to avoid caching
     let mut rnd = [0u8; 6];
@@ -56,8 +56,9 @@ pub async fn ble_task(
     info!("Address (Rnd): {}", to_hex(&rnd));
 
     // Add address bytes to name
-    let mut device_name = heapless::String::<16>::new();
-    device_name.push_str(DEVICE_NAME).ok();
+    static DEVICE_NAME: StaticCell<heapless::String<16>> = StaticCell::new();
+    let device_name = DEVICE_NAME.init(heapless::String::new());
+    device_name.push_str(DEVICE).ok();
     device_name.push_str("_").ok();
     for b in &rnd[(rnd.len() - 2)..] {
         device_name
@@ -72,24 +73,22 @@ pub async fn ble_task(
     let address: Address = Address::random(rnd);
 
     static RESOURCES: StaticCell<
-        HostResources<
-            ExternalController<BleConnector, 1>,
-            DefaultPacketPool,
-            CONNECTIONS_MAX,
-            L2CAP_CHANNELS_MAX,
-            ADV_SETS_MAX,
-        >,
+        HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX>,
     > = StaticCell::new();
     let resources = RESOURCES.init(HostResources::new());
 
     static STACK: StaticCell<Stack<ExternalController<BleConnector, 1>, DefaultPacketPool>> =
         StaticCell::new();
-    let host = trouble_host::new(controller, resources)
-        .set_random_address(address)
-        .build();
-    let stack = STACK.init(host);
-    let runner = stack.runner();
-    let mut peripheral = stack.peripheral();
+    let stack =
+        STACK.init(trouble_host::new(ble_controller, resources).set_random_address(address));
+
+    let Host {
+        mut peripheral,
+        runner,
+        ..
+    } = stack.build();
+
+    spawner.spawn(defmt::unwrap!(ble_runner_task(runner)));
 
     info!("Starting Advertising and GATT service");
     let server = defmt::unwrap!(PowerMeterServer::new_with_config(GapConfig::Peripheral(
@@ -98,9 +97,6 @@ pub async fn ble_task(
             appearance: &appearance::sensor::GENERIC_SENSOR,
         }
     )));
-
-    // Spawn BLE task
-    spawner.spawn(defmt::unwrap!(ble_runner_task(runner)));
 
     loop {
         match advertise(device_name.as_str(), &mut peripheral, &server).await {
@@ -131,7 +127,7 @@ async fn ble_runner_task(
 async fn gatt_events_task<P: PacketPool>(
     server: &PowerMeterServer<'_>,
     conn: &GattConnection<'_, '_, P>,
-    config_tx: &'static Sender<'static, NoopRawMutex, u16, 1>,
+    config_tx: &'static Sender<'static, RawMutex, u16, 1>,
 ) -> Result<(), Error> {
     let reason = loop {
         match conn.next().await {
@@ -278,7 +274,7 @@ async fn advertise<'values, 'server, C: Controller>(
     let len = AdStructure::encode_slice(
         &[
             AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-            AdStructure::CompleteServiceUuids16(&[[0x01, 0x18]]),
+            AdStructure::ServiceUuids16(&[[0x01, 0x18]]),
             AdStructure::CompleteLocalName(name.as_bytes()),
         ],
         &mut advertiser_data[..],

@@ -6,7 +6,8 @@
     holding buffers for the duration of a data transfer."
 )]
 
-pub mod ble_task;
-pub mod c6_lcd;
+pub mod ble;
 pub mod encoder;
 pub mod ina219;
+pub mod lcd;
+pub mod wdt;

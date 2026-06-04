@@ -8,10 +8,11 @@ use esp_hal::{
     time::Rate,
     Async,
 };
+use esp_sync::RawMutex;
 
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
 use embassy_sync::channel::{Channel, Receiver, Sender};
-use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
+use embassy_sync::mutex::Mutex;
 
 use embedded_graphics::{mono_font::MonoTextStyle, pixelcolor::Rgb565, prelude::*, text::Text};
 
@@ -20,7 +21,9 @@ use lcd_async::{
     models::ST7789,
     options::{ColorInversion, ColorOrder, Orientation, Rotation},
     raw_framebuf::RawFrameBuf,
-    Builder, NoResetPin, TestImage,
+    Builder,
+    TestImage,
+    // NoResetPin
 };
 
 use static_cell::StaticCell;
@@ -41,7 +44,7 @@ pub enum LcdError {
     TaskInit,
 }
 
-pub type LcdSender = Sender<'static, NoopRawMutex, (LcdMessage, bool), 1>;
+pub type LcdSender = Sender<'static, RawMutex, (LcdMessage, bool), 1>;
 
 pub struct LcdPins {
     pub dc: AnyPin<'static>,   // DC (Data/Command)
@@ -53,9 +56,8 @@ pub struct LcdPins {
 }
 
 // Init C6 display
-// (Note - peripherals are fixed to make ownership easier)
 #[allow(clippy::too_many_arguments)]
-pub async fn init_lcd(
+pub async fn lcd_init(
     pins: LcdPins,
     spi_dev: esp_hal::peripherals::SPI2<'static>, // SPI Device
     dma_ch: esp_hal::peripherals::DMA_CH0<'static>, // DMA device
@@ -99,7 +101,7 @@ pub async fn init_lcd(
     let _bl = Output::new(bl, Level::High, Default::default());
 
     // Create shared SPI bus
-    static SPI_BUS: StaticCell<Mutex<NoopRawMutex, SpiDmaBus<'static, Async>>> = StaticCell::new();
+    static SPI_BUS: StaticCell<Mutex<RawMutex, SpiDmaBus<'static, Async>>> = StaticCell::new();
     let spi_bus = Mutex::new(spi);
     let spi_bus = SPI_BUS.init(spi_bus);
     let spi_device = SpiDevice::new(spi_bus, cs);
@@ -122,9 +124,8 @@ pub async fn init_lcd(
 
     info!("Display initialized!");
 
-    static LCD_CHANNEL: StaticCell<Channel<NoopRawMutex, (LcdMessage, bool), 1>> =
-        StaticCell::new();
-    static LCD_CHANNEL_RX: StaticCell<Receiver<NoopRawMutex, (LcdMessage, bool), 1>> =
+    static LCD_CHANNEL: StaticCell<Channel<RawMutex, (LcdMessage, bool), 1>> = StaticCell::new();
+    static LCD_CHANNEL_RX: StaticCell<Receiver<RawMutex, (LcdMessage, bool), 1>> =
         StaticCell::new();
 
     let lcd_channel = LCD_CHANNEL.init(Channel::new());
@@ -151,14 +152,14 @@ pub enum LcdMessage {
 const FONT_HEIGHT: u16 = 16;
 const DISPLAY_LINES: usize = (DISPLAY_HEIGHT / FONT_HEIGHT) as usize;
 
-type LcdSpiDevice = SpiDevice<'static, NoopRawMutex, SpiDmaBus<'static, Async>, Output<'static>>;
+type LcdSpiDevice = SpiDevice<'static, RawMutex, SpiDmaBus<'static, Async>, Output<'static>>;
 type LcdDisplay =
     lcd_async::Display<SpiInterface<LcdSpiDevice, Output<'static>>, ST7789, Output<'static>>;
 
 #[embassy_executor::task]
 async fn lcd_task(
     mut display: LcdDisplay,
-    lcd_rx: &'static mut Receiver<'static, NoopRawMutex, (LcdMessage, bool), 1>,
+    lcd_rx: &'static mut Receiver<'static, RawMutex, (LcdMessage, bool), 1>,
 ) {
     // Initialize frame buffer
     static FRAME_BUFFER: StaticCell<[u8; FRAME_SIZE]> = StaticCell::new();

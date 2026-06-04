@@ -5,43 +5,32 @@
     reason = "mem::forget is generally not safe to do with esp_hal types, especially those \
     holding buffers for the duration of a data transfer."
 )]
+#![deny(clippy::large_stack_frames)]
 
-use esp_hal::{
-    clock::CpuClock,
-    gpio::Pin,
-    i2c,
-    time::Rate,
-    timer::timg::{MwdtStage, TimerGroup},
-    Async,
-};
+use esp_hal::{clock::CpuClock, gpio::Pin, i2c, time::Rate, timer::timg::TimerGroup, Async};
+use esp_sync::RawMutex;
 
-#[cfg(target_arch = "riscv32")]
-use esp_hal::interrupt::software::SoftwareInterruptControl;
-
-use core::fmt::Write;
-use defmt_rtt as _;
-use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
 use embassy_futures::select::{select3, Either3};
 use embassy_sync::{
-    blocking_mutex::raw::NoopRawMutex,
     channel::{Channel, Sender},
     mutex::Mutex,
 };
 use embassy_time::{Duration, Ticker, Timer};
-use embedded_graphics::{
-    pixelcolor::Rgb565,
-    prelude::{Point, RgbColor},
-};
-use esp_alloc as _;
-use esp_backtrace as _;
-use portable_atomic::{AtomicI32, Ordering};
+
+use panic_rtt_target as _;
+
+use portable_atomic::Ordering;
 use static_cell::StaticCell;
 
-use power_monitor::ble_task::{ble_task, INA219_CONFIG, POWER_AVG, POWER_INSTANT};
-use power_monitor::c6_lcd::{init_lcd, LcdMessage, LcdPins, LcdSender};
-use power_monitor::encoder::{self, EncoderMsg};
-use power_monitor::ina219::*;
+use power_monitor::ble::{ble_task, INA219_CONFIG, POWER_AVG, POWER_INSTANT};
+use power_monitor::encoder::{encoder_init, EncoderMsg};
+use power_monitor::ina219::{ina219_init, Ina219Config, Ina219Error, Ina219Reading};
+use power_monitor::lcd::{lcd_init, LcdPins};
+use power_monitor::wdt::wdt_task;
+
+mod lcd_update;
+use lcd_update::{update, ENCODER};
 
 extern crate alloc;
 
@@ -49,50 +38,28 @@ extern crate alloc;
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
 esp_bootloader_esp_idf::esp_app_desc!();
 
-static I2C_BUS: StaticCell<Mutex<NoopRawMutex, i2c::master::I2c<Async>>> = StaticCell::new();
-static ENCODER: AtomicI32 = AtomicI32::new(0);
-
-#[embassy_executor::task]
-async fn wdt_task(
-    wdt: &'static mut esp_hal::timer::timg::Wdt<esp_hal::peripherals::TIMG0<'static>>,
-) {
-    wdt.set_timeout(
-        MwdtStage::Stage0,
-        esp_hal::time::Duration::from_millis(5_000),
-    );
-    wdt.enable();
-    let mut counter = 0_u32;
-    loop {
-        wdt.feed();
-        if counter.is_multiple_of(10) {
-            let (used, free) = {
-                let used = esp_alloc::HEAP.used();
-                let free = esp_alloc::HEAP.free();
-                (used, free)
-            };
-            defmt::info!("Heap: used={} free={} total={}", used, free, used + free);
-        }
-        Timer::after(Duration::from_secs(1)).await;
-        counter += 1;
-    }
-}
-
+#[allow(
+    clippy::large_stack_frames,
+    reason = "it's not unusual to allocate larger buffers etc. in main"
+)]
 #[esp_rtos::main]
-async fn main(spawner: Spawner) {
+async fn main(spawner: Spawner) -> ! {
+    // generator version: 1.3.0
+    // generator parameters: --chip esp32c6 -o unstable-hal -o alloc -o embassy -o ble-trouble -o probe-rs -o defmt -o panic-rtt-target -o stable-aarch64-apple-darwin
+
+    rtt_target::rtt_init_defmt!();
+
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
-    esp_alloc::heap_allocator!(size: 64 * 1024);
 
-    defmt::info!("Init!");
+    esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 64 * 1024);
 
-    #[cfg(target_arch = "riscv32")]
-    let sw_int = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(
-        timg0.timer0,
-        #[cfg(target_arch = "riscv32")]
-        sw_int.software_interrupt0,
-    );
+    let sw_interrupt =
+        esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
+    esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
+
+    defmt::info!("Embassy Init");
 
     // Watchdog
     static WDT: StaticCell<esp_hal::timer::timg::Wdt<esp_hal::peripherals::TIMG0>> =
@@ -100,40 +67,9 @@ async fn main(spawner: Spawner) {
     let wdt = WDT.init(timg0.wdt);
 
     spawner.spawn(wdt_task(wdt).expect("wdt_task"));
+    defmt::info!("WDT Init");
 
-    // External LCD
-    #[cfg(not(feature = "lcd_builtin"))]
-    let pins = LcdPins {
-        dc: peripherals.GPIO9.degrade(),   // DC (Data/Command)
-        cs: peripherals.GPIO14.degrade(),  // CS (Chip Select)
-        sclk: peripherals.GPIO6.degrade(), // CLK
-        mosi: peripherals.GPIO7.degrade(), // DIN
-        res: peripherals.GPIO8.degrade(),  // RES (Reset)
-        bl: peripherals.GPIO15.degrade(),  // Backlight
-    };
-
-    // Internal LCD
-    #[cfg(feature = "lcd_builtin")]
-    let pins = LcdPins {
-        dc: peripherals.GPIO15.degrade(),  // DC (Data/Command)
-        cs: peripherals.GPIO14.degrade(),  // CS (Chip Select)
-        sclk: peripherals.GPIO7.degrade(), // CLK
-        mosi: peripherals.GPIO6.degrade(), // DIN
-        res: peripherals.GPIO21.degrade(), // RES (Reset)
-        bl: peripherals.GPIO22.degrade(),  // Backlight
-    };
-
-    // Init LCD
-    let mut lcd_tx = init_lcd(
-        pins,
-        peripherals.SPI2,    // SPI Device
-        peripherals.DMA_CH0, // DMA device
-        spawner,
-    )
-    .await
-    .expect("init_lcd");
-
-    // Initialise I2C Bus
+    // I2C Bus
     let i2c_config = i2c::master::Config::default().with_frequency(Rate::from_khz(100));
     let scl = peripherals.GPIO3;
     let sda = peripherals.GPIO4;
@@ -153,63 +89,55 @@ async fn main(spawner: Spawner) {
     defmt::info!("Scan I2C bus: DONE");
 
     // Create shared I2C bus
+    static I2C_BUS: StaticCell<Mutex<RawMutex, i2c::master::I2c<Async>>> = StaticCell::new();
     let i2c_bus = I2C_BUS.init(Mutex::new(i2c));
 
-    let mut ina219_device = defmt::unwrap!(
-        async {
-            let mut ina219_device = Ina219::new(
-                I2cDevice::new(i2c_bus),
-                INA219_ADDRESS,
-                INA219_SHUNT_RESISTOR,
-            );
+    // INA219
+    let mut ina219_device = defmt::unwrap!(ina219_init(i2c_bus).await);
+    INA219_CONFIG.store(ina219_device.config.0, Ordering::Relaxed);
+    defmt::info!("INA219 INIT: {}", ina219_device.config.as_str());
 
-            ina219_device.reset().await?;
+    // LCD
+    let pins = LcdPins {
+        dc: peripherals.GPIO9.degrade(),   // DC (Data/Command)
+        cs: peripherals.GPIO14.degrade(),  // CS (Chip Select)
+        sclk: peripherals.GPIO6.degrade(), // CLK
+        mosi: peripherals.GPIO7.degrade(), // DIN
+        res: peripherals.GPIO8.degrade(),  // RES (Reset)
+        bl: peripherals.GPIO15.degrade(),  // Backlight
+    };
 
-            ina219_device
-                .write_config(
-                    Ina219Config::default()
-                        .with_brng(Ina219Brng::Brng32V)
-                        .with_pga(Ina219Pga::Pga80mV)
-                        .with_badc(Ina219Adc::Adc12_16)
-                        .with_sadc(Ina219Adc::Adc12_16),
-                )
-                .await?;
+    let mut lcd_tx = lcd_init(
+        pins,
+        peripherals.SPI2,    // SPI Device
+        peripherals.DMA_CH0, // DMA device
+        spawner,
+    )
+    .await
+    .expect("init_lcd");
+    defmt::info!("LCD INIT");
 
-            // Store config as U16 for BLE
-            INA219_CONFIG.store(ina219_device.config.0, Ordering::Relaxed);
-
-            let (brng, pga, badc, sadc) = ina219_device.config.as_str();
-            defmt::info!(
-                "INA219 Config: Brng: {} / PGA: {} / BADC: {} / SADC: {}",
-                brng,
-                pga,
-                badc,
-                sadc
-            );
-            Ok::<_, Ina219Error>(ina219_device)
-        }
-        .await
-    );
-
+    // Rotary encoder
     let (clk, dt, sw) = (
         peripherals.GPIO20.degrade(),
         peripherals.GPIO19.degrade(),
         peripherals.GPIO18.degrade(),
     );
-
-    // Rotary encoder
-    let encoder_rx = encoder::init(spawner, clk, dt, sw);
+    let encoder_rx = encoder_init(spawner, clk, dt, sw);
+    defmt::info!("ENCODER INIT");
 
     // Create channel for BLE config write
-    static CONFIG_CHANNEL: StaticCell<Channel<NoopRawMutex, u16, 1>> = StaticCell::new();
-    static CONFIG_TX: StaticCell<Sender<NoopRawMutex, u16, 1>> = StaticCell::new();
+    static CONFIG_CHANNEL: StaticCell<Channel<RawMutex, u16, 1>> = StaticCell::new();
+    static CONFIG_TX: StaticCell<Sender<RawMutex, u16, 1>> = StaticCell::new();
     let config_channel = CONFIG_CHANNEL.init(Channel::new());
     let config_rx = config_channel.receiver();
     let config_tx = CONFIG_TX.init(config_channel.sender());
 
-    // BLE Task
+    // BLE Init
     spawner.spawn(defmt::unwrap!(ble_task(spawner, peripherals.BT, config_tx)));
+    defmt::info!("BLE INIT");
 
+    // Main loop
     let mut ticker = Ticker::every(Duration::from_millis(100));
     let mut reading = Ina219Reading::default();
     let mut avg = heapless::Deque::<Ina219Reading, 10>::new();
@@ -309,129 +237,4 @@ async fn main(spawner: Spawner) {
             }
         }
     }
-}
-
-/// Update INA219 reading and display
-async fn update(
-    lcd_tx: &mut LcdSender,
-    previous: Ina219Reading,
-    reading: Result<Ina219Reading, Ina219Error>,
-    status: &(&str, &str, &str, &str),
-) -> Ina219Reading {
-    let mut next = previous;
-
-    // Clear screen
-    lcd_tx
-        .send((LcdMessage::Background(Rgb565::BLUE), false))
-        .await;
-
-    // Update reading (checking for errors)
-    match reading {
-        Ok(r) => {
-            next = r;
-        }
-        Err(Ina219Error::NotReady) => {
-            lcd_tx
-                .send((
-                    LcdMessage::Static("Not Ready", Point::new(10, 105), 14, Rgb565::RED),
-                    false,
-                ))
-                .await;
-        }
-        Err(Ina219Error::Overflow) => {
-            lcd_tx
-                .send((
-                    LcdMessage::Static("Overflow", Point::new(10, 105), 14, Rgb565::RED),
-                    false,
-                ))
-                .await;
-        }
-        Err(Ina219Error::I2cError) => {
-            lcd_tx
-                .send((
-                    LcdMessage::Static("I2C Error", Point::new(10, 105), 14, Rgb565::RED),
-                    false,
-                ))
-                .await;
-        }
-    }
-
-    // Display reading
-    let mut v_txt = heapless::String::<40>::new();
-    let _ = write!(&mut v_txt, "{:>8.3}V", next.bus_v);
-    lcd_tx
-        .send((
-            LcdMessage::Text(v_txt, Point::new(140, 25), 24, Rgb565::GREEN),
-            false,
-        ))
-        .await;
-    let mut i_txt = heapless::String::<40>::new();
-    let _ = write!(&mut i_txt, "{:>8.3}mA", next.shunt_ma);
-    lcd_tx
-        .send((
-            LcdMessage::Text(i_txt, Point::new(140, 55), 24, Rgb565::YELLOW),
-            false,
-        ))
-        .await;
-    let mut p_txt = heapless::String::<40>::new();
-    let _ = write!(&mut p_txt, "{:>8.3}mW", next.power_mw());
-    lcd_tx
-        .send((
-            LcdMessage::Text(p_txt, Point::new(140, 85), 24, Rgb565::WHITE),
-            false,
-        ))
-        .await;
-
-    // Write Labels
-    for (i, label) in ["V(bus)", "I(shunt)", "Power"].iter().enumerate() {
-        lcd_tx
-            .send((
-                LcdMessage::Static(
-                    label,
-                    Point::new(10, 23 + (i as i32 * 30)),
-                    18,
-                    Rgb565::GREEN,
-                ),
-                false,
-            ))
-            .await;
-    }
-
-    // Write Settings
-    // Get encoder position to highlight selected (-1 is not selected)
-    let encoder_index = ENCODER.load(Ordering::Relaxed).rem_euclid(5) - 1;
-    let (brng, pga, badc, sadc) = status;
-    for (i, (label, value)) in [
-        ("Range", brng),
-        ("PGA", pga),
-        ("BADC", badc),
-        ("SADC", sadc),
-    ]
-    .iter()
-    .enumerate()
-    {
-        let mut status_txt = heapless::String::<40>::new();
-        let _ = write!(&mut status_txt, "{:<8}: {}", label, value);
-        lcd_tx
-            .send((
-                LcdMessage::Text(
-                    status_txt,
-                    Point::new(10, 124 + (i as i32 * 14)),
-                    12,
-                    if encoder_index == i as i32 {
-                        Rgb565::RED
-                    } else {
-                        Rgb565::GREEN
-                    },
-                ),
-                false,
-            ))
-            .await;
-    }
-
-    // Update display
-    lcd_tx.send((LcdMessage::Draw, true)).await;
-
-    // Return new reading
-    next
 }

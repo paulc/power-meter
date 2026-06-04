@@ -1,1 +1,4 @@
-rust-toolchain-riscv.toml
+[toolchain]
+channel    = "stable-aarch64-apple-darwin"
+components = ["rust-src"]
+targets = ["riscv32imac-unknown-none-elf"]

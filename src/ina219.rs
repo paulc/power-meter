@@ -1,8 +1,10 @@
 #![allow(unused)]
 
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
-use embassy_sync::blocking_mutex::raw::RawMutex;
+use embassy_sync::mutex::Mutex;
 use embedded_hal_async::i2c::I2c;
+use esp_hal::Async;
+use esp_sync::RawMutex;
 
 pub const INA219_ADDRESS: u8 = 0x40;
 pub const INA219_SHUNT_RESISTOR: f32 = 0.1;
@@ -273,23 +275,21 @@ fn get_bits(value: u16, offset: u8, width: u8) -> u16 {
     (value >> offset) & mask
 }
 
-pub struct Ina219<'a, M, BUS>
+pub struct Ina219<'a, BUS>
 where
-    M: RawMutex,
     BUS: I2c,
 {
-    i2c: I2cDevice<'a, M, BUS>,
+    i2c: I2cDevice<'a, RawMutex, BUS>,
     address: u8,
     shunt_resistor: f32,
     pub config: Ina219Config,
 }
 
-impl<'a, M, BUS> Ina219<'a, M, BUS>
+impl<'a, BUS> Ina219<'a, BUS>
 where
-    M: RawMutex,
     BUS: I2c,
 {
-    pub fn new(i2c: I2cDevice<'a, M, BUS>, address: u8, shunt_resistor: f32) -> Self {
+    pub fn new(i2c: I2cDevice<'a, RawMutex, BUS>, address: u8, shunt_resistor: f32) -> Self {
         // Need to reset device before use
         Self {
             i2c,
@@ -352,4 +352,36 @@ where
 
         Ok(Ina219Reading { bus_v, shunt_ma })
     }
+}
+
+pub async fn ina219_init(
+    i2c_bus: &'static mut Mutex<RawMutex, esp_hal::i2c::master::I2c<'static, Async>>,
+) -> Result<Ina219<'static, esp_hal::i2c::master::I2c<'static, Async>>, Ina219Error> {
+    let mut ina219_device = Ina219::new(
+        I2cDevice::new(i2c_bus),
+        INA219_ADDRESS,
+        INA219_SHUNT_RESISTOR,
+    );
+
+    ina219_device.reset().await?;
+
+    ina219_device
+        .write_config(
+            Ina219Config::default()
+                .with_brng(Ina219Brng::Brng32V)
+                .with_pga(Ina219Pga::Pga80mV)
+                .with_badc(Ina219Adc::Adc12_16)
+                .with_sadc(Ina219Adc::Adc12_16),
+        )
+        .await?;
+
+    let (brng, pga, badc, sadc) = ina219_device.config.as_str();
+    defmt::info!(
+        "INA219 Config: Brng: {} / PGA: {} / BADC: {} / SADC: {}",
+        brng,
+        pga,
+        badc,
+        sadc
+    );
+    Ok::<_, Ina219Error>(ina219_device)
 }

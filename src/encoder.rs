@@ -1,9 +1,9 @@
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, Either};
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_time::Timer;
 use esp_hal::gpio::{AnyPin, Input, InputConfig, Pull};
+use esp_sync::RawMutex;
 use static_cell::StaticCell;
 
 const CHANNEL_LENGTH: usize = 4;
@@ -15,13 +15,13 @@ pub enum EncoderMsg {
     Decrement,
 }
 
-pub fn init(
+pub fn encoder_init(
     spawner: Spawner,
     clk: AnyPin<'static>,
     dt: AnyPin<'static>,
     sw: AnyPin<'static>,
-) -> Receiver<'static, NoopRawMutex, EncoderMsg, CHANNEL_LENGTH> {
-    static ENCODER_CHANNEL: StaticCell<Channel<NoopRawMutex, EncoderMsg, CHANNEL_LENGTH>> =
+) -> Receiver<'static, RawMutex, EncoderMsg, CHANNEL_LENGTH> {
+    static ENCODER_CHANNEL: StaticCell<Channel<RawMutex, EncoderMsg, CHANNEL_LENGTH>> =
         StaticCell::new();
     let encoder_chan = ENCODER_CHANNEL.init(Channel::new());
     spawner.spawn(encoder_task(clk, dt, sw, encoder_chan.sender()).expect("encoder_task"));
@@ -35,7 +35,7 @@ async fn encoder_task(
     clk: AnyPin<'static>,
     dt: AnyPin<'static>,
     sw: AnyPin<'static>,
-    encoder_tx: Sender<'static, NoopRawMutex, EncoderMsg, CHANNEL_LENGTH>,
+    encoder_tx: Sender<'static, RawMutex, EncoderMsg, CHANNEL_LENGTH>,
 ) {
     let mut enc_sw = Input::new(sw, InputConfig::default().with_pull(Pull::Up));
     let mut enc_clk = Input::new(clk, InputConfig::default().with_pull(Pull::Up));
