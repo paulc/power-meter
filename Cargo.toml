@@ -8,8 +8,8 @@ version      = "0.1.0"
 harness = false
 
 [[bin]]
-name = "power-monitor"
-path = "src/main.rs"
+name = "power_monitor"
+path = "src/bin/power_monitor/main.rs"
 harness = false
 
 [features]
