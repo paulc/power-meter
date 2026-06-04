@@ -72,9 +72,10 @@ heapless = { version = "0.9.1", features = ["defmt", "serde"] }
 portable-atomic = "1.13.0"
 static_cell = { version = "2.1.1", features = ["nightly"] }
 
+
 trouble-host = { 
     git = "https://github.com/embassy-rs/trouble", 
-    branch = "main", 
+    rev = "6de9503251205ce794a3451009b5ef27d3decf28",
     subdir = "host",
     features = [
         "default-packet-pool-mtu-255",

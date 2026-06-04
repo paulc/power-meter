@@ -1,0 +1,16 @@
+name = "trouble-host"
+version = "0.6.0"
+source = "git+https://github.com/embassy-rs/trouble?branch=main#6de9503251205ce794a3451009b5ef27d3decf28"
+dependencies = [
+ "bt-hci",
+ "embassy-futures",
+ "embassy-sync 0.8.0",
+ "embassy-time",
+ "embedded-io 0.7.1",
+ "futures",
+ "heapless 0.9.3",
+ "rand_core 0.6.4",
+ "static_cell",
+ "trouble-host-macros",
+ "zerocopy",
+]
