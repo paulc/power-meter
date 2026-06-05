@@ -8,6 +8,7 @@
 
 pub mod ble;
 pub mod encoder;
+pub mod encoder_pcnt;
 pub mod ina219;
 pub mod lcd;
 pub mod wdt;
