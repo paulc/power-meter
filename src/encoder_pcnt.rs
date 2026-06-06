@@ -14,7 +14,7 @@ use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
 use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_sync::signal::Signal;
-use embassy_time::Timer;
+use embassy_time::{Duration, Ticker, Timer};
 
 use panic_rtt_target as _;
 
@@ -22,10 +22,12 @@ use panic_rtt_target as _;
 static UNIT0: Mutex<RefCell<Option<Unit<'static, 0>>>> = Mutex::new(RefCell::new(None));
 static SIGNAL0: Signal<CriticalSectionRawMutex, EncoderMsg> = Signal::new();
 static CHANNEL0: StaticCell<Channel<NoopRawMutex, EncoderMsg, CHANNEL_LENGTH>> = StaticCell::new();
+static COUNTER0: Signal<CriticalSectionRawMutex, i16> = Signal::new();
 
 static UNIT1: Mutex<RefCell<Option<Unit<'static, 1>>>> = Mutex::new(RefCell::new(None));
 static SIGNAL1: Signal<CriticalSectionRawMutex, EncoderMsg> = Signal::new();
 static CHANNEL1: StaticCell<Channel<NoopRawMutex, EncoderMsg, CHANNEL_LENGTH>> = StaticCell::new();
+static COUNTER1: Signal<CriticalSectionRawMutex, i16> = Signal::new();
 
 const CHANNEL_LENGTH: usize = 4;
 const DEBOUNCE_MS: u64 = 2;
@@ -42,6 +44,7 @@ pub struct EncoderUnit<const N: usize> {
     pub unit_cell: &'static Mutex<RefCell<Option<Unit<'static, N>>>>,
     pub signal: &'static Signal<CriticalSectionRawMutex, EncoderMsg>,
     pub channel: &'static StaticCell<Channel<NoopRawMutex, EncoderMsg, CHANNEL_LENGTH>>,
+    pub counter: &'static Signal<CriticalSectionRawMutex, i16>,
 }
 
 pub fn encoder_module_init(
@@ -55,12 +58,14 @@ pub fn encoder_module_init(
             unit_cell: &UNIT0,
             signal: &SIGNAL0,
             channel: &CHANNEL0,
+            counter: &COUNTER0,
         },
         EncoderUnit {
             unit: pcnt.unit1,
             unit_cell: &UNIT1,
             signal: &SIGNAL1,
             channel: &CHANNEL1,
+            counter: &COUNTER1,
         },
     )
 }
@@ -113,18 +118,87 @@ impl<const N: usize> EncoderUnit<N> {
         Timer::after_millis(100).await;
         self.unit.clear();
 
+        // Move unit into static
         critical_section::with(|cs| self.unit_cell.borrow_ref_mut(cs).replace(self.unit));
 
         // Start encoder task
-        spawner.spawn(encoder_task(sw, &self.signal, encoder_chan.sender()).expect("encoder_task"));
+        spawner.spawn(event_task(sw, &self.signal, encoder_chan.sender()).expect("encoder_task"));
 
         // Return channel receiver
         encoder_chan.receiver()
     }
+
+    // Raw counter - count signal updates every 'update' Duration
+    pub async fn init_counter(
+        self,
+        spawner: Spawner,
+        clk: AnyPin<'static>,
+        dt: AnyPin<'static>,
+        update: Duration,
+    ) -> &'static Signal<CriticalSectionRawMutex, i16> {
+        // Dont setup limits - we only use raw counter value
+
+        // Configure clk/dt as inputs
+        let config = InputConfig::default().with_pull(Pull::Up);
+        let input_clk = Input::new(clk, config).peripheral_input();
+        let input_dt = Input::new(dt, config).peripheral_input();
+
+        // Set clk edge trigger
+        let ch0 = &self.unit.channel0;
+        ch0.set_edge_signal(input_clk.clone());
+        ch0.set_ctrl_signal(input_dt.clone());
+        ch0.set_input_mode(EdgeMode::Increment, EdgeMode::Decrement);
+        ch0.set_ctrl_mode(CtrlMode::Reverse, CtrlMode::Keep);
+
+        // Set dt edge trigger
+        let ch1 = &self.unit.channel1;
+        ch1.set_edge_signal(input_dt);
+        ch1.set_ctrl_signal(input_clk);
+        ch1.set_input_mode(EdgeMode::Decrement, EdgeMode::Increment);
+        ch1.set_ctrl_mode(CtrlMode::Reverse, CtrlMode::Keep);
+
+        // Move unit into static
+        critical_section::with(|cs| self.unit_cell.borrow_ref_mut(cs).replace(self.unit));
+
+        // Start counter task (we cant pass generics into task so use 2 fns)
+        match N {
+            0 => spawner.spawn(counter_task0(update, self.counter).expect("counter_task")),
+            1 => spawner.spawn(counter_task1(update, self.counter).expect("counter_task")),
+            _ => panic!("Can get here - only 2 EncoderUnit instances"),
+        }
+
+        self.counter
+    }
 }
 
 #[embassy_executor::task]
-async fn encoder_task(
+async fn counter_task0(update: Duration, counter: &'static Signal<CriticalSectionRawMutex, i16>) {
+    let mut ticker = Ticker::every(update);
+    loop {
+        critical_section::with(|cs| {
+            if let Some(unit) = UNIT0.borrow_ref(cs).as_ref() {
+                counter.signal(unit.counter.get())
+            }
+        });
+        ticker.next().await;
+    }
+}
+
+#[embassy_executor::task]
+async fn counter_task1(update: Duration, counter: &'static Signal<CriticalSectionRawMutex, i16>) {
+    let mut ticker = Ticker::every(update);
+    loop {
+        critical_section::with(|cs| {
+            if let Some(unit) = UNIT1.borrow_ref(cs).as_ref() {
+                counter.signal(unit.counter.get())
+            }
+        });
+        ticker.next().await;
+    }
+}
+
+#[embassy_executor::task]
+async fn event_task(
     sw: AnyPin<'static>,
     signal: &'static Signal<CriticalSectionRawMutex, EncoderMsg>,
     tx: Sender<'static, NoopRawMutex, EncoderMsg, CHANNEL_LENGTH>,
