@@ -103,8 +103,8 @@ async fn main(spawner: Spawner) -> ! {
         cs: peripherals.GPIO14.degrade(),  // CS (Chip Select)
         sclk: peripherals.GPIO6.degrade(), // CLK
         mosi: peripherals.GPIO7.degrade(), // DIN
-        res: peripherals.GPIO8.degrade(),  // RES (Reset)
-        bl: peripherals.GPIO15.degrade(),  // Backlight
+        // res: peripherals.GPIO8.degrade(),  // RES (Reset)
+        bl: peripherals.GPIO15.degrade(), // Backlight
     };
 
     let mut lcd_tx = lcd_init(

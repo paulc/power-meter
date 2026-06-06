@@ -21,9 +21,7 @@ use lcd_async::{
     models::ST7789,
     options::{ColorInversion, ColorOrder, Orientation, Rotation},
     raw_framebuf::RawFrameBuf,
-    Builder,
-    TestImage,
-    // NoResetPin
+    Builder, NoResetPin, TestImage,
 };
 
 use static_cell::StaticCell;
@@ -51,8 +49,8 @@ pub struct LcdPins {
     pub cs: AnyPin<'static>,   // CS (Chip Select)
     pub sclk: AnyPin<'static>, // CLK
     pub mosi: AnyPin<'static>, // DIN
-    pub res: AnyPin<'static>,  // RES (Reset)
-    pub bl: AnyPin<'static>,   // Backlight
+    // pub res: AnyPin<'static>,  // RES (Reset)
+    pub bl: AnyPin<'static>, // Backlight
 }
 
 // Init C6 display
@@ -69,7 +67,7 @@ pub async fn lcd_init(
         cs,
         sclk,
         mosi,
-        res,
+        // res,
         bl,
     } = pins;
 
@@ -93,7 +91,7 @@ pub async fn lcd_init(
     .into_async();
 
     // Create control pins
-    let res = Output::new(res, Level::Low, Default::default());
+    // let res = Output::new(res, Level::Low, Default::default());
     let dc = Output::new(dc, Level::Low, Default::default());
     let cs = Output::new(cs, Level::High, Default::default());
 
@@ -112,7 +110,7 @@ pub async fn lcd_init(
 
     // Initialize the display
     let display = Builder::new(ST7789, di)
-        .reset_pin(res)
+        // .reset_pin(res)
         .orientation(Orientation::default().rotate(Rotation::Deg270))
         .color_order(ColorOrder::Rgb)
         .invert_colors(ColorInversion::Inverted)
@@ -154,7 +152,8 @@ const DISPLAY_LINES: usize = (DISPLAY_HEIGHT / FONT_HEIGHT) as usize;
 
 type LcdSpiDevice = SpiDevice<'static, RawMutex, SpiDmaBus<'static, Async>, Output<'static>>;
 type LcdDisplay =
-    lcd_async::Display<SpiInterface<LcdSpiDevice, Output<'static>>, ST7789, Output<'static>>;
+    lcd_async::Display<SpiInterface<LcdSpiDevice, Output<'static>>, ST7789, NoResetPin>;
+// lcd_async::Display<SpiInterface<LcdSpiDevice, Output<'static>>, ST7789, Output<'static>>;
 
 #[embassy_executor::task]
 async fn lcd_task(
