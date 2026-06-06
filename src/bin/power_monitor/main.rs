@@ -24,7 +24,7 @@ use portable_atomic::Ordering;
 use static_cell::StaticCell;
 
 use power_monitor::ble::{ble_task, INA219_CONFIG, POWER_AVG, POWER_INSTANT};
-use power_monitor::encoder_pcnt::{encoder_init, EncoderMsg};
+use power_monitor::encoder_pcnt::{encoder_module_init, EncoderMsg};
 use power_monitor::ina219::{ina219_init, Ina219Config, Ina219Error, Ina219Reading};
 use power_monitor::lcd::{lcd_init, LcdPins};
 use power_monitor::wdt::wdt_task;
@@ -123,7 +123,8 @@ async fn main(spawner: Spawner) -> ! {
         peripherals.GPIO19.degrade(),
         peripherals.GPIO18.degrade(),
     );
-    let encoder_rx = encoder_init(spawner, peripherals.PCNT, clk, dt, sw).await;
+    let (encoder, _) = encoder_module_init(peripherals.PCNT);
+    let encoder_rx = encoder.init(spawner, clk, dt, sw).await;
     defmt::info!("ENCODER INIT");
 
     // Create channel for BLE config write
