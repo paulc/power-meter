@@ -13,15 +13,13 @@ use embassy_executor::Spawner;
 
 use panic_rtt_target as _;
 
-use portable_atomic::{AtomicI32, Ordering};
+use portable_atomic::Ordering;
 use static_cell::StaticCell;
 
-use power_monitor::encoder::{encoder_init, EncoderMsg};
+use power_monitor::encoder::{encoder_init, EncoderMsg, COUNTER};
 use power_monitor::wdt::wdt_task;
 
 extern crate alloc;
-
-pub static ENCODER: AtomicI32 = AtomicI32::new(0);
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -70,21 +68,14 @@ async fn main(spawner: Spawner) -> ! {
     loop {
         let msg = encoder_rx.receive().await;
         match msg {
-            // Get encoder input
-            // - turn to increment/decrement selection
-            // - press to cycle setting
             EncoderMsg::Button => {
-                // Get encoder_index: -1 not selected
-                let encoder_index = ENCODER.load(Ordering::Relaxed);
-                defmt::info!(">> BUTTON: {}", encoder_index);
+                defmt::info!(">> BUTTON");
             }
             EncoderMsg::Increment => {
-                ENCODER.fetch_add(1, Ordering::Relaxed);
-                defmt::info!(">> INCREMENT: {}", ENCODER.load(Ordering::Relaxed));
+                defmt::info!(">> INCREMENT: {}", COUNTER.load(Ordering::Relaxed));
             }
             EncoderMsg::Decrement => {
-                ENCODER.fetch_add(-1, Ordering::Relaxed);
-                defmt::info!(">> DECREMENT: {}", ENCODER.load(Ordering::Relaxed));
+                defmt::info!(">> DECREMENT: {}", COUNTER.load(Ordering::Relaxed));
             }
         }
     }
