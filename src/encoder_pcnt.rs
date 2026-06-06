@@ -174,6 +174,7 @@ fn check_unit<const N: usize>(
                 signal.signal(EncoderMsg::Decrement);
             }
             u.reset_interrupt();
+            u.clear();
         }
     }
 }
