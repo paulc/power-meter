@@ -15,7 +15,7 @@ use panic_rtt_target as _;
 
 use static_cell::StaticCell;
 
-use power_monitor::encoder_pcnt::{encoder_init, EncoderMsg};
+use power_monitor::encoder_pcnt::{encoder_module_init, EncoderMsg};
 use power_monitor::wdt::wdt_task;
 
 extern crate alloc;
@@ -56,14 +56,16 @@ async fn main(spawner: Spawner) -> ! {
     defmt::info!("WDT Init");
 
     // Rotary encoder
+    let (_encoder0, encoder1) = encoder_module_init(peripherals.PCNT);
+
     let (clk, dt, sw) = (
         peripherals.GPIO20.degrade(),
         peripherals.GPIO19.degrade(),
         peripherals.GPIO18.degrade(),
     );
 
-    let encoder_rx = encoder_init(spawner, peripherals.PCNT, clk, dt, sw).await;
-    defmt::info!(">> ENCODER INIT");
+    let encoder_rx = encoder1.init(spawner, clk, dt, sw).await;
+    defmt::info!(">> ENCODER0 INIT");
 
     loop {
         match encoder_rx.receive().await {
