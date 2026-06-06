@@ -45,7 +45,12 @@ pub fn encoder_init(
     static ENCODER_CHANNEL: StaticCell<Channel<RawMutex, EncoderMsg, CHANNEL_LENGTH>> =
         StaticCell::new();
     let encoder_chan = ENCODER_CHANNEL.init(Channel::new());
-    spawner.spawn(encoder_task(clk, dt, sw, encoder_chan.sender()).expect("encoder_task"));
+    spawner.spawn(defmt::unwrap!(encoder_task(
+        clk,
+        dt,
+        sw,
+        encoder_chan.sender()
+    )));
     encoder_chan.receiver()
 }
 

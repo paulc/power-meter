@@ -122,7 +122,11 @@ impl<const N: usize> EncoderUnit<N> {
         critical_section::with(|cs| self.unit_cell.borrow_ref_mut(cs).replace(self.unit));
 
         // Start encoder task
-        spawner.spawn(event_task(sw, &self.signal, encoder_chan.sender()).expect("encoder_task"));
+        spawner.spawn(defmt::unwrap!(event_task(
+            sw,
+            &self.signal,
+            encoder_chan.sender()
+        )));
 
         // Return channel receiver
         encoder_chan.receiver()
@@ -162,8 +166,8 @@ impl<const N: usize> EncoderUnit<N> {
 
         // Start counter task (we cant pass generics into task so use 2 fns)
         match N {
-            0 => spawner.spawn(counter_task0(update, self.counter).expect("counter_task")),
-            1 => spawner.spawn(counter_task1(update, self.counter).expect("counter_task")),
+            0 => spawner.spawn(defmt::unwrap!(counter_task0(update, self.counter))),
+            1 => spawner.spawn(defmt::unwrap!(counter_task1(update, self.counter))),
             _ => panic!("Can get here - only 2 EncoderUnit instances"),
         }
 
