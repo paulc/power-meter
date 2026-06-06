@@ -1,7 +1,7 @@
 use esp_hal::gpio::{AnyPin, Input, InputConfig, Pull};
 use esp_hal::pcnt::{
     channel::{CtrlMode, EdgeMode},
-    unit::{Counter, Unit},
+    unit::Unit,
     Pcnt,
 };
 
@@ -21,12 +21,10 @@ use panic_rtt_target as _;
 // Per-unit statics
 static UNIT0: Mutex<RefCell<Option<Unit<'static, 0>>>> = Mutex::new(RefCell::new(None));
 static SIGNAL0: Signal<CriticalSectionRawMutex, EncoderMsg> = Signal::new();
-static COUNTER0: StaticCell<Counter<'static, 0>> = StaticCell::new();
 static CHANNEL0: StaticCell<Channel<NoopRawMutex, EncoderMsg, CHANNEL_LENGTH>> = StaticCell::new();
 
 static UNIT1: Mutex<RefCell<Option<Unit<'static, 1>>>> = Mutex::new(RefCell::new(None));
 static SIGNAL1: Signal<CriticalSectionRawMutex, EncoderMsg> = Signal::new();
-static COUNTER1: StaticCell<Counter<'static, 1>> = StaticCell::new();
 static CHANNEL1: StaticCell<Channel<NoopRawMutex, EncoderMsg, CHANNEL_LENGTH>> = StaticCell::new();
 
 const CHANNEL_LENGTH: usize = 4;
@@ -42,7 +40,6 @@ pub enum EncoderMsg {
 pub struct EncoderUnit<const N: usize> {
     pub unit: Unit<'static, N>,
     pub unit_cell: &'static Mutex<RefCell<Option<Unit<'static, N>>>>,
-    pub counter_cell: &'static StaticCell<Counter<'static, N>>,
     pub signal: &'static Signal<CriticalSectionRawMutex, EncoderMsg>,
     pub channel: &'static StaticCell<Channel<NoopRawMutex, EncoderMsg, CHANNEL_LENGTH>>,
 }
@@ -56,14 +53,12 @@ pub fn encoder_module_init(
         EncoderUnit {
             unit: pcnt.unit0,
             unit_cell: &UNIT0,
-            counter_cell: &COUNTER0,
             signal: &SIGNAL0,
             channel: &CHANNEL0,
         },
         EncoderUnit {
             unit: pcnt.unit1,
             unit_cell: &UNIT1,
-            counter_cell: &COUNTER1,
             signal: &SIGNAL1,
             channel: &CHANNEL1,
         },
@@ -114,10 +109,6 @@ impl<const N: usize> EncoderUnit<N> {
         // Enable interrupts & restart
         self.unit.listen();
         self.unit.resume();
-
-        // If we need counter in encoder_task (note that this is generic
-        // by Counter<N> so would need to modify encoder_task)
-        let _counter = self.counter_cell.init(self.unit.counter.clone());
 
         Timer::after_millis(100).await;
         self.unit.clear();
