@@ -70,12 +70,18 @@ pub fn encoder_init(
     static ENCODER_CHANNEL: StaticCell<Channel<RawMutex, EncoderMsg, CHANNEL_LENGTH>> =
         StaticCell::new();
     let encoder_chan = ENCODER_CHANNEL.init(Channel::new());
+
+    let enc_clk = Input::new(clk, InputConfig::default().with_pull(Pull::Up));
+    let enc_dt = Input::new(dt, InputConfig::default().with_pull(Pull::Up));
+    let enc_sw = Input::new(sw, InputConfig::default().with_pull(Pull::Up));
+
     spawner.spawn(defmt::unwrap!(encoder_task(
-        clk,
-        dt,
-        sw,
+        enc_clk,
+        enc_dt,
+        enc_sw,
         encoder_chan.sender()
     )));
+
     encoder_chan.receiver()
 }
 
@@ -86,14 +92,11 @@ fn state(a: &Input, b: &Input) -> u8 {
 
 #[embassy_executor::task]
 async fn encoder_task(
-    clk: AnyPin<'static>,
-    dt: AnyPin<'static>,
-    sw: AnyPin<'static>,
+    mut enc_clk: Input<'static>,
+    mut enc_dt: Input<'static>,
+    mut enc_sw: Input<'static>,
     tx: Sender<'static, RawMutex, EncoderMsg, CHANNEL_LENGTH>,
 ) {
-    let mut enc_clk = Input::new(clk, InputConfig::default().with_pull(Pull::Up));
-    let mut enc_dt = Input::new(dt, InputConfig::default().with_pull(Pull::Up));
-    let mut enc_sw = Input::new(sw, InputConfig::default().with_pull(Pull::Up));
     let mut prev: i16 = 0;
     let mut counter: i16 = 0;
 
