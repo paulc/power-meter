@@ -2,7 +2,43 @@
  * Software Rotary Encoder Driver
  *
  * Unless you have a good reason use encoder_pcnt (uses HW PCNT peripheral)
+ *
+ *
+ * CLK  ------+            +-----------
+ *            |            |
+ *            +------------+
+ *
+ * DT   ------------+             +-----
+ *                  |             |
+ *                  +-------------+
+ *           ^      ^      ^      ^
+ *       11     01     00     10     11
+ *              +1     +1     +1     +1
+ *
+ *
+ * CLK  ------------+             +-----
+ *                  |             |
+ *                  +-------------+
+ *
+ * DT   ------+            +-----------
+ *            |            |
+ *            +------------+
+ *            ^      ^      ^      ^
+ *        11    10     00     01     11
+ *              -1     -1     -1     -1
+ *
+ *  prev    next
+ *  11  ->  10    -1
+ *  10  ->  00    -1
+ *  01  ->  11    -1
+ *  00  ->  01    -1
+ *  11  ->  01    +1
+ *  10  ->  11    +1
+ *  01  ->  00    +1
+ *  00  ->  10    +1
+ *
  */
+
 use embassy_executor::Spawner;
 use embassy_futures::select::{select3, Either3};
 use embassy_sync::channel::{Channel, Receiver, Sender};
@@ -13,19 +49,8 @@ use portable_atomic::{AtomicI16, Ordering};
 use static_cell::StaticCell;
 
 const CHANNEL_LENGTH: usize = 4;
-const DEBOUNCE_MS: u64 = 2;
-
-// State: clk_high << 1 | dt_high
-// Index: (prev << 2) | current
-// Value: 0 = no change, 1 = CW, -1 = CCW, 2 = invalid
-#[rustfmt::skip]
-const TRANSITION_TABLE: [i8; 16] = [
-    /*    curr    00  01  10  11 */
-    /* prev 00 */  0, -1,  1,  2, 
-    /* prev 01 */  1,  0,  2, -1,
-    /* prev 10 */ -1,  2,  0,  1, 
-    /* prev 11 */  2,  1, -1,  0,
-];
+const SW_DEBOUNCE_MS: u64 = 10;
+const ENCODER_DEBOUNCE_MS: u64 = 1;
 
 pub static COUNTER: AtomicI16 = AtomicI16::new(0);
 
@@ -54,6 +79,11 @@ pub fn encoder_init(
     encoder_chan.receiver()
 }
 
+#[inline]
+fn state(a: &Input, b: &Input) -> u8 {
+    ((a.is_high() as u8) << 1) | (b.is_high() as u8)
+}
+
 #[embassy_executor::task]
 async fn encoder_task(
     clk: AnyPin<'static>,
@@ -67,7 +97,7 @@ async fn encoder_task(
     let mut prev: i16 = 0;
     let mut counter: i16 = 0;
 
-    let mut prev_state: u8 = (enc_clk.is_high() as u8) << 1 | enc_dt.is_high() as u8;
+    let mut prev_state = state(&enc_clk, &enc_dt);
 
     loop {
         match select3(
@@ -78,18 +108,20 @@ async fn encoder_task(
         .await
         {
             Either3::First(_) | Either3::Second(_) => {
-                let curr_state = (enc_clk.is_high() as u8) << 1 | enc_dt.is_high() as u8;
-                let delta = TRANSITION_TABLE[((prev_state << 2) | curr_state) as usize];
-                if delta != 2 {
-                    counter += delta as i16;
-                }
-                prev_state = curr_state;
+                Timer::after_millis(ENCODER_DEBOUNCE_MS).await;
+                let current_state = state(&enc_clk, &enc_dt);
+                match (prev_state, current_state) {
+                    (0b11, 0b10) | (0b10, 0b00) | (0b01, 0b11) | (0b00, 0b01) => counter -= 1,
+                    (0b11, 0b01) | (0b10, 0b11) | (0b01, 0b00) | (0b00, 0b10) => counter += 1,
+                    _ => {} // Invalid
+                };
+                prev_state = current_state;
             }
             Either3::Third(_) => {
                 // Debounce input
-                Timer::after_millis(DEBOUNCE_MS).await;
+                Timer::after_millis(SW_DEBOUNCE_MS).await;
                 if enc_sw.is_low() {
-                    tx.send(EncoderMsg::Button).await;
+                    let _ = tx.try_send(EncoderMsg::Button);
                 }
                 // Dont check counter
                 continue;
@@ -101,9 +133,9 @@ async fn encoder_task(
         let delta = counter - prev;
         if delta.abs() >= 4 {
             if delta > 0 {
-                tx.send(EncoderMsg::Increment).await;
+                let _ = tx.try_send(EncoderMsg::Increment);
             } else {
-                tx.send(EncoderMsg::Decrement).await;
+                let _ = tx.try_send(EncoderMsg::Decrement);
             }
             prev = counter;
         }
